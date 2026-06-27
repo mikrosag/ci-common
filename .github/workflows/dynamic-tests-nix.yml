@@ -1,0 +1,20 @@
+name: dynamic-tests-nix
+
+on:
+  workflow_call:
+    inputs:
+      test-command:
+        description: "Command to run inside the Nix devShell"
+        type: string
+        default: "python3 -m pytest tests/ -v"
+        required: false
+
+jobs:
+  test:
+    runs-on: [self-hosted, macOS]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add Nix to PATH
+        run: echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
+      - name: Run tests in Nix devShell
+        run: nix develop -c ${{ inputs.test-command }}

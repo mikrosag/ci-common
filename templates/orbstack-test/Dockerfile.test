@@ -1,0 +1,9 @@
+# Template test image for repos that prefer container-based dynamic testing over Nix.
+# Copy into <repo>/Dockerfile.test, adjust base image/deps for the actual stack.
+FROM python:3.13-slim
+
+WORKDIR /app
+COPY . .
+RUN pip install --no-cache-dir pytest -r requirements.txt 2>/dev/null || pip install --no-cache-dir pytest
+
+ENTRYPOINT ["pytest"]

@@ -1,0 +1,25 @@
+name: dynamic-tests-container
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile:
+        description: "Dockerfile to build for the test image"
+        type: string
+        default: "Dockerfile.test"
+        required: false
+      test-command:
+        description: "Command to run inside the container"
+        type: string
+        default: "pytest tests/ -v"
+        required: false
+
+jobs:
+  test:
+    runs-on: [self-hosted, macOS]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build test image
+        run: docker build -f "${{ inputs.dockerfile }}" -t local/dynamic-test:${{ github.sha }} .
+      - name: Run tests in container
+        run: docker run --rm local/dynamic-test:${{ github.sha }} ${{ inputs.test-command }}
