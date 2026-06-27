@@ -1,0 +1,24 @@
+# Paste into <repo>/.github/workflows/ci.yml and deploy.yml as shown.
+# ci.yml (runs on pull_request, gates the PR before merge):
+#
+# jobs:
+#   security:
+#     uses: mikrosag/ci-common/.github/workflows/security-checks.yml@main
+#   build-check:
+#     runs-on: [self-hosted, macOS]
+#     steps:
+#       - uses: actions/checkout@v4
+#       - run: docker compose build   # fail fast on a broken Dockerfile, no deploy yet
+#
+# deploy.yml (runs on push to main, i.e. after a PR merges):
+#
+# on:
+#   push:
+#     branches: [main]
+#
+# jobs:
+#   deploy:
+#     runs-on: [self-hosted, macOS]
+#     steps:
+#       - uses: actions/checkout@v4
+#       - run: bash deploy/deploy.sh

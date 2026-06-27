@@ -1,0 +1,27 @@
+name: security-checks
+
+on:
+  workflow_call:
+    inputs:
+      semgrep-config:
+        description: "Semgrep ruleset (default: auto-detect)"
+        type: string
+        default: auto
+        required: false
+
+jobs:
+  secret-scan:
+    runs-on: [self-hosted, macOS]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        run: gitleaks detect --source . --no-banner --redact
+
+  sast:
+    runs-on: [self-hosted, macOS]
+    steps:
+      - uses: actions/checkout@v4
+      - name: semgrep
+        run: semgrep scan --config "${{ inputs.semgrep-config }}" --error
