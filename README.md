@@ -44,6 +44,13 @@ Shared CI/CD infrastructure for repos in the `mikrosag` org. There is one self-h
 - **Notify on pipeline failure, not on every run.** Wire `notify-telegram.yml` with `if: failure()` so it only fires when something actually breaks — a message on every green run is noise, not signal.
 - **Agent instructions:** every repo should have its own `AGENTS.md` (canonical) with tool-specific stubs (`CLAUDE.md`, `GEMINI.md`, etc.) — see `automation/AGENTS.md` for the pattern. This repo only carries `AGENTS.md` + `CLAUDE.md` since it's infra that's edited rarely; replicate the fuller stub set in repos that get frequent day-to-day edits.
 
+## Kanban (GitHub Projects v2 + Notion tie-back)
+
+- **Source of truth:** [`mikrosag Roadmap`](https://github.com/orgs/mikrosag/projects/1) — an org-level GitHub Project v2, linked to `automation` and `ci-common`. Status field: `Backlog → Todo → In Progress → In Review → Done`.
+- **Notion tie-back:** a `mikrosag Roadmap` database in Notion (workspace-level, separate from Frans's personal "My Tasks") mirrors the project for visibility from Notion. Schema: `Name`, `Status` (same five values), `Repo`, `GitHub URL`. **This is not a live sync** — there's no scheduled job keeping them in lockstep. An agent picking up a card updates both: move the GitHub Project item's Status, and update (or create) the matching Notion row with the same Status and a `GitHub URL` link. If the two ever disagree, GitHub is authoritative.
+- **Card → code flow:** pick an item from the project → create a branch/PR referencing the linked issue → CI runs the usual checks → merge → mark the project item (and Notion row) `Done`. Standard agentic flow, no extra tooling needed.
+- **One-time setup still pending in the GitHub UI** (no stable API for this): open the project's `⋯` menu → Workflows → enable "Item added to project" (auto-add issues/PRs from linked repos) and "Item closed" (auto-set Status to Done). Quick, one-time, has to be clicked through.
+
 ## Versioning
 
 Callers should pin to a tag once this repo stabilizes (e.g. `@v1`) rather than `@main`, so a change here can't silently break every repo's CI at once. Currently early enough that everything points at `@main` — revisit once there's more than one consumer repo.
