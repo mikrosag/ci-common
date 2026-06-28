@@ -15,6 +15,16 @@ Shared CI/CD infrastructure for repos in the `mikrosag` org. There is one self-h
 - `.github/workflows/sca-scan.yml` — reusable workflow: `osv-scanner` dependency/SCA scan (free, OSS, Google). Call from any repo's CI. **Observability-only (`continue-on-error: true`)** — surfaces findings in every PR's logs but doesn't block merges yet, since severity data is inconsistent across ecosystems and there's no triaged baseline. Needs a manifest (`requirements.txt`, `package.json`, etc.) to scan — a repo with deps declared only in `flake.nix` should also keep a `requirements.txt` mirror (see `automation/requirements.txt`) purely so this has something real to check.
 - `.github/workflows/container-scan.yml` — reusable workflow: builds a Dockerfile and scans the image with `trivy`, failing on CRITICAL/HIGH by default. Only relevant for repos that build a container.
 - `.github/workflows/lint-js.yml` — reusable workflow: `npm ci` + ESLint, for JavaScript/TypeScript repos (see `templates/lint-js/`).
+- `.github/workflows/notify-telegram.yml` — reusable workflow: posts a message to Frans's Telegram (the existing OpenClaw "HomeClaw" bot) via the Bot API. Call with `secrets: inherit` so the org-level `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` secrets pass through:
+  ```yaml
+  notify-failure:
+    needs: [other-job]
+    if: failure()
+    uses: mikrosag/ci-common/.github/workflows/notify-telegram.yml@main
+    secrets: inherit
+    with:
+      message: "🚨 something failed — link to the run"
+  ```
 - `templates/launchd-deploy/` — for repos that ship as scheduled launchd jobs on the Mac (the `automation` repo is the reference implementation of this).
 - `templates/orbstack-deploy/` — for repos that ship as a container via OrbStack on the Mac.
 - `templates/nix-test/`, `templates/orbstack-test/` — scaffolding for the two dynamic-test reusable workflows above.
@@ -30,6 +40,8 @@ Shared CI/CD infrastructure for repos in the `mikrosag` org. There is one self-h
 - **Deploy logic stays per-repo** (different repos deploy to different places — launchd vs. OrbStack), but should start from the matching template here rather than being designed from scratch.
 - **`ruff`, `osv-scanner`, `trivy` are installed via Homebrew on the runner Mac** (not containerized), same pattern as `gitleaks`/`semgrep`. If any goes missing: `brew install ruff osv-scanner trivy`.
 - **Snyk, Aqua (platform), and similar paid SaaS scanners are deliberately not used.** Free/OSS equivalents cover the same ground: `osv-scanner` for SCA, `trivy` for container images, `semgrep`+`gitleaks` for SAST/secrets. Don't add a paid tool without a clear reason it's not covered.
+- **`TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are org-level secrets** (set via `gh secret set ... --org mikrosag`), visible to every repo. This is the existing OpenClaw bot token, reused rather than creating a second bot — don't print these values in logs or commit them anywhere, even in this private repo.
+- **Notify on pipeline failure, not on every run.** Wire `notify-telegram.yml` with `if: failure()` so it only fires when something actually breaks — a message on every green run is noise, not signal.
 - **Agent instructions:** every repo should have its own `AGENTS.md` (canonical) with tool-specific stubs (`CLAUDE.md`, `GEMINI.md`, etc.) — see `automation/AGENTS.md` for the pattern. This repo only carries `AGENTS.md` + `CLAUDE.md` since it's infra that's edited rarely; replicate the fuller stub set in repos that get frequent day-to-day edits.
 
 ## Versioning
