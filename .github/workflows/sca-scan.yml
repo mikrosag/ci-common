@@ -1,0 +1,12 @@
+name: sca-scan
+
+on:
+  workflow_call: {}
+
+jobs:
+  osv-scanner:
+    runs-on: [self-hosted, macOS]
+    steps:
+      - uses: actions/checkout@v4
+      - name: OSV-Scanner
+        run: osv-scanner scan source --recursive .

@@ -1,0 +1,25 @@
+name: container-scan
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile:
+        description: "Dockerfile to build and scan"
+        type: string
+        default: "Dockerfile"
+        required: false
+      severity:
+        description: "Trivy severity threshold that fails the build"
+        type: string
+        default: "CRITICAL,HIGH"
+        required: false
+
+jobs:
+  trivy:
+    runs-on: [self-hosted, macOS]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image for scanning
+        run: docker build -f "${{ inputs.dockerfile }}" -t local/trivy-scan:${{ github.sha }} .
+      - name: Trivy scan
+        run: trivy image --exit-code 1 --severity "${{ inputs.severity }}" local/trivy-scan:${{ github.sha }}
