@@ -18,7 +18,7 @@ jobs:
   test:
     runs-on: [self-hosted, macOS]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build test image
         run: docker build -f "${{ inputs.dockerfile }}" -t local/dynamic-test:${{ github.sha }} .
       - name: Run tests in container

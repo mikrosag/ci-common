@@ -12,7 +12,7 @@ jobs:
     # PR's logs without failing the check — tighten to a hard gate once there's a
     # triaged baseline and a real severity-parsing step worth maintaining.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: OSV-Scanner (report only, does not fail the build)
         run: |
           osv-scanner scan source --recursive . || true
