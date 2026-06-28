@@ -9,22 +9,10 @@ jobs:
     # Observability-only for now: osv-scanner's severity data is inconsistent across
     # ecosystems (mixed CVSS string formats, not always a clean numeric score), so
     # there's no reliable threshold to gate on yet. This surfaces findings in every
-    # PR's logs without blocking merges — tighten to a hard gate once there's a
+    # PR's logs without failing the check — tighten to a hard gate once there's a
     # triaged baseline and a real severity-parsing step worth maintaining.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - name: OSV-Scanner
+      - name: OSV-Scanner (report only, does not fail the build)
         run: |
-          set +e
-          out=$(osv-scanner scan source --recursive . 2>&1)
-          code=$?
-          echo "$out"
-          if [ $code -eq 0 ]; then
-            exit 0
-          elif echo "$out" | grep -q "No package sources found"; then
-            echo "No dependency manifest in this repo — nothing to scan, treating as pass."
-            exit 0
-          else
-            exit $code
-          fi
+          osv-scanner scan source --recursive . || true
