@@ -1,0 +1,30 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Pipeline: ci-common status",
+      "type": "shell",
+      "command": "gh run list --repo mikrosag/ci-common --limit 5",
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "group": "build"
+    },
+    {
+      "label": "Pipeline: open PRs",
+      "type": "shell",
+      "command": "gh pr list --repo mikrosag/ci-common",
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Pipeline: automation status",
+      "type": "shell",
+      "command": "gh run list --repo mikrosag/automation --limit 5",
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Pipeline: homelab status",
+      "type": "shell",
+      "command": "gh run list --repo mikrosag/homelab --limit 5",
+      "presentation": { "reveal": "always", "panel": "shared" }
+    }
+  ]
+}

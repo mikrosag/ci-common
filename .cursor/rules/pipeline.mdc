@@ -1,0 +1,23 @@
+---
+description: mikrosag/ci-common shared workflow library rules
+alwaysApply: true
+---
+
+# ci-common — Pipeline rules for Cursor
+
+**What this repo is:** Shared reusable GitHub Actions workflow library for `mikrosag`. No deploy step. Callers: automation, homelab, mac-config.
+
+## Key facts
+
+- No CI of its own — all workflows are `workflow_call`. "No checks reported" on PRs is correct.
+- **Every change here is immediately live** for all callers — treat as org-wide infrastructure.
+- `templates/` are one-time copies — editing them doesn't retroactively update repos that already used them.
+
+**Check status:** `gh run list --repo mikrosag/ci-common --limit 5`
+
+## Critical rules
+
+- Don't rename reusable workflow `inputs` or job names without updating every caller
+- Don't add a deploy step here
+
+See AGENTS.md for full details.
