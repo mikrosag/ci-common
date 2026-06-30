@@ -18,7 +18,7 @@ jobs:
   trivy:
     runs-on: [self-hosted, macOS]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build image for scanning
         run: docker build -f "${{ inputs.dockerfile }}" -t local/trivy-scan:${{ github.sha }} .
       - name: Trivy scan
