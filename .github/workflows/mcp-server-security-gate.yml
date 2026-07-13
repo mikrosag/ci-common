@@ -1,0 +1,165 @@
+name: mcp-server-security-gate
+
+# Fail-closed admission gate for onboarding a new (or changed) MCP server onto the
+# gateway -- called from any repo's ci.yml whenever a change touches a path matching
+# `**/mcp-servers/**` or adds/changes a `registry/*.yaml` manifest. See the design
+# doc section 7 and homelab/mcp-gateway/registry/README.md for the full flow.
+#
+# Implements all 6 stages from the design:
+#   1. secret-scan       -- security-checks.yml (gitleaks)
+#   2. sast               -- security-checks.yml (semgrep, standard rules) +
+#                             mcp-semgrep-rules job (this repo's MCP-specific rules)
+#   3. dep/container scan -- sca-scan.yml (osv-scanner) + container-scan.yml (trivy)
+#   4. sbom + signing     -- sbom-sign job (syft + cosign sign-blob, keyless)
+#   5. policy check       -- policy-check job (conftest against this repo's Rego
+#                             bundle: compose hardening + manifest structure)
+#   6. egress allowlist   -- folded into policy-check's manifest namespace (a
+#                             manifest missing network.egress, or declaring "*",
+#                             is a deny there -- see policy/mcp-server-manifest.rego)
+#
+# Only after every job below passes does the calling repo's deploy.yml write the
+# registry manifest and let gateway-sync pick it up. This workflow only checks --
+# it has no write access to homelab's registry directory or the gateway itself.
+
+on:
+  workflow_call:
+    inputs:
+      server-path:
+        description: "Directory containing the server's Dockerfile/docker-compose.yml, relative to the calling repo's root"
+        type: string
+        default: "."
+        required: false
+      dockerfile:
+        description: "Dockerfile path, relative to the calling repo's root"
+        type: string
+        default: "Dockerfile"
+        required: false
+      compose-file:
+        description: "docker-compose.yml path, relative to the calling repo's root. Empty string skips the compose policy check (e.g. a stdio-only server with no compose file yet)."
+        type: string
+        default: "docker-compose.yml"
+        required: false
+      manifest-path:
+        description: "Path to the registry manifest yaml being added/changed for this server"
+        type: string
+        required: true
+      server-name:
+        description: "Server name, used to name the generated SBOM file"
+        type: string
+        required: true
+      severity:
+        description: "Trivy severity threshold that fails the build"
+        type: string
+        default: "CRITICAL,HIGH"
+        required: false
+
+permissions:
+  contents: read
+  id-token: write   # required for cosign keyless signing (Sigstore/Fulcio OIDC)
+
+jobs:
+  secret-scan-and-sast:
+    uses: mikrosag/ci-common/.github/workflows/security-checks.yml@main
+
+  sca-scan:
+    uses: mikrosag/ci-common/.github/workflows/sca-scan.yml@main
+
+  container-scan:
+    uses: mikrosag/ci-common/.github/workflows/container-scan.yml@main
+    with:
+      dockerfile: ${{ inputs.dockerfile }}
+      severity: ${{ inputs.severity }}
+
+  mcp-semgrep-rules:
+    runs-on: [self-hosted, macOS]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: server
+      - uses: actions/checkout@v4
+        with:
+          repository: mikrosag/ci-common
+          path: ci-common
+      - name: MCP-specific semgrep rules
+        working-directory: server
+        run: semgrep scan --config ../ci-common/semgrep-rules/mcp-server.yml --error
+
+  sbom-sign:
+    runs-on: [self-hosted, macOS]
+    needs: [container-scan]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image for SBOM
+        working-directory: ${{ inputs.server-path }}
+        run: docker build -f "${{ inputs.dockerfile }}" -t "local/mcp-sbom:${{ inputs.server-name }}-${{ github.sha }}" .
+      - name: Generate SBOM (Syft, CycloneDX)
+        run: |
+          mkdir -p sbom
+          syft "local/mcp-sbom:${{ inputs.server-name }}-${{ github.sha }}" -o cyclonedx-json > "sbom/${{ inputs.server-name }}-$(date +%Y.%m.%d).json"
+      - name: Sign the SBOM (cosign, keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          SBOM_FILE="sbom/${{ inputs.server-name }}-$(date +%Y.%m.%d).json"
+          cosign sign-blob --yes \
+            --output-signature "${SBOM_FILE}.sig" \
+            --output-certificate "${SBOM_FILE}.pem" \
+            "$SBOM_FILE"
+      - name: Verify the signature we just produced
+        run: |
+          SBOM_FILE="sbom/${{ inputs.server-name }}-$(date +%Y.%m.%d).json"
+          cosign verify-blob \
+            --signature "${SBOM_FILE}.sig" \
+            --certificate "${SBOM_FILE}.pem" \
+            --certificate-identity-regexp ".*" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$SBOM_FILE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ inputs.server-name }}
+          # The calling repo's PR is expected to commit these files (sbom.json +
+          # .sig + .pem) at the path referenced by the manifest's
+          # security.attestation field -- this job produces them, it doesn't
+          # commit on the caller's behalf, since which repo/path is caller-specific.
+          path: sbom/
+
+  policy-check:
+    runs-on: [self-hosted, macOS]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: server
+      - uses: actions/checkout@v4
+        with:
+          repository: mikrosag/ci-common
+          path: ci-common
+      - name: Resolve compose config (if this server has one)
+        if: inputs.compose-file != ''
+        working-directory: server/${{ inputs.server-path }}
+        run: docker compose -f "${{ inputs.compose-file }}" config > "${{ github.workspace }}/compose-resolved.yml"
+      - name: conftest -- compose hardening
+        if: inputs.compose-file != ''
+        run: conftest test --policy ci-common/policy --namespace main.compose compose-resolved.yml
+      - name: conftest -- manifest structure + egress allowlist (stage 6)
+        run: conftest test --policy ci-common/policy --namespace main.manifest "server/${{ inputs.manifest-path }}"
+
+  gate-summary:
+    runs-on: [self-hosted, macOS]
+    needs:
+      [
+        secret-scan-and-sast,
+        sca-scan,
+        container-scan,
+        mcp-semgrep-rules,
+        sbom-sign,
+        policy-check,
+      ]
+    if: always()
+    steps:
+      - name: Fail closed if any stage failed
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') }}" = "true" ]; then
+            echo "One or more security-gate stages failed -- no manifest may be written, no deploy may proceed."
+            exit 1
+          fi
+          echo "All mcp-server-security-gate stages passed."
