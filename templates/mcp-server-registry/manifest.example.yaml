@@ -1,0 +1,20 @@
+# Template for homelab/mcp-gateway/registry/<server-name>.yaml -- copy, fill in,
+# commit. gateway-sync (automation/scripts/gateway_sync.py) reconciles everything
+# in that directory into MetaMCP. See that directory's README.md for the full flow.
+name: mcp-example-server
+namespace: core             # single shared namespace (decision locked in) -- always "core" for now
+transport: stdio            # stdio | streamable-http -- must match one of these two exactly
+launch:
+  command: /opt/mikrosag/bin/mcp-example-server   # stdio only; omit for streamable-http
+  # url: https://... # streamable-http only; omit for stdio
+owner: frans
+security:
+  # Path to the SBOM produced by mcp-server-security-gate.yml's sbom-sign job,
+  # committed alongside this manifest. gateway-sync refuses to sync a manifest
+  # whose attestation file doesn't exist or doesn't verify against its .sig/.pem.
+  attestation: sbom/mcp-example-server-2026.01.01.json
+  signed: true
+allow_from: [core]          # which client identities may see this in their namespace
+network:
+  egress: []                 # [] = no outbound network calls, or an explicit host list.
+                              # Never "*" -- conftest's policy-check rejects wildcard egress.

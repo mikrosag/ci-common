@@ -1,0 +1,126 @@
+# Custom Semgrep rules for onboarding new MCP servers (mcp-server-security-gate.yml).
+# These supplement the standard `auto` ruleset semgrep already runs in security-checks.yml.
+# Generic-pattern rules — expect false positives on unusual but legitimate code; suppress
+# with `# nosemgrep: <rule-id>` plus a one-line reason, per the automation repo's convention.
+#
+# Rules are split per-language rather than declaring multiple `languages:` on one rule —
+# semgrep parses every `pattern:` in a rule against every language it declares, so mixing
+# Python-only syntax (f-strings, `def ...:`) and JS/TS-only syntax (template literals,
+# `fs.readFile`) in one rule breaks parsing for whichever language a given pattern isn't
+# valid in. Verified locally with `semgrep --validate` and a live scan against sample
+# vulnerable code before this rule file was committed.
+rules:
+  - id: mcp-tool-description-prompt-injection-shape
+    languages: [python, javascript, typescript]
+    severity: WARNING
+    message: >-
+      Tool/prompt description string contains instruction-shaped language ("ignore
+      previous", "you must", "system:", "assistant:", ...). MCP tool descriptions are
+      read by the calling LLM as context, not just documentation — an instruction-shaped
+      description is a prompt-injection vector against any agent that loads this server.
+      Rewrite as a plain factual description, or confirm this is a deliberate example (not
+      live default) before merging.
+    patterns:
+      - pattern-regex: "(?i)(description|instructions)\\s*[:=]\\s*.{0,10}(ignore (all|previous|prior) instructions|disregard (the|any) (system|prior) prompt|you must (always|never))"
+
+  - id: mcp-tool-unrestricted-filesystem-path-py
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Tool accepts a filesystem path parameter with no visible allowlist/base-directory
+      check before use. A path-accepting MCP tool without containment lets any caller
+      (including a compromised upstream LLM) read/write outside the intended scope.
+      Validate against an explicit allowlisted root before opening/reading/writing.
+    patterns:
+      - pattern: open($PATH, ...)
+      - pattern-not-inside: |
+          def $FUNC(...):
+              ...
+              if not $PATH.startswith(...):
+                  ...
+              ...
+      - metavariable-pattern:
+          metavariable: $PATH
+          patterns:
+            - pattern-not: '"..."'
+
+  - id: mcp-tool-unrestricted-filesystem-path-js
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Tool accepts a filesystem path parameter with no visible allowlist/base-directory
+      check before use. A path-accepting MCP tool without containment lets any caller
+      (including a compromised upstream LLM) read/write outside the intended scope.
+      Validate against an explicit allowlisted root before opening/reading/writing.
+    patterns:
+      - pattern-either:
+          - pattern: fs.readFile($PATH, ...)
+          - pattern: fs.writeFile($PATH, ...)
+          - pattern: fs.readFileSync($PATH, ...)
+          - pattern: fs.writeFileSync($PATH, ...)
+      - metavariable-pattern:
+          metavariable: $PATH
+          patterns:
+            - pattern-not: '"..."'
+
+  - id: mcp-tool-shell-out-unsanitized-py
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Tool shells out with a variable built from tool-call input, not a fixed argv list.
+      An MCP tool's arguments are attacker-influenced input from the calling LLM's
+      perspective just as much as an HTTP request body is — string-built shell commands
+      are command injection. Use an argv list (`subprocess.run([...])`) instead of
+      `shell=True` with string concatenation/f-strings.
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run($CMD, shell=True, ...)
+          - pattern: subprocess.call($CMD, shell=True, ...)
+      - metavariable-pattern:
+          metavariable: $CMD
+          patterns:
+            - pattern-either:
+                - pattern: f"...{$X}..."
+                - pattern: "... + $X + ..."
+
+  - id: mcp-tool-os-system-py
+    languages: [python]
+    severity: ERROR
+    message: >-
+      `os.system` always runs its argument through a shell, with no argv-list separation
+      between command and arguments -- unsafe for any MCP tool whose argument can be
+      influenced by tool-call input (i.e. almost all of them). Use `subprocess.run([...])`
+      with an explicit argv list instead.
+    patterns:
+      - pattern: os.system($CMD)
+
+  - id: mcp-tool-shell-out-unsanitized-js
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Tool shells out with a variable built from tool-call input, not a fixed argv list.
+      An MCP tool's arguments are attacker-influenced input from the calling LLM's
+      perspective just as much as an HTTP request body is — string-built shell commands
+      are command injection. Use `child_process.execFile`/`spawn` with an argv array
+      instead of `exec`/`spawn` with `shell: true` and a string built from tool-call input.
+    patterns:
+      - pattern-either:
+          - pattern: child_process.exec($CMD, ...)
+          - pattern: exec($CMD)
+      - metavariable-pattern:
+          metavariable: $CMD
+          patterns:
+            - pattern-either:
+                - pattern: "... + $X + ..."
+                - pattern: "`...${$X}...`"
+
+  - id: mcp-tool-overly-broad-scope
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      Registry manifest or tool scope declaration grants a wildcard/unrestricted
+      permission ("*", "all", unrestricted network/filesystem access). Every onboarded
+      server should declare the narrowest scope it actually needs — a "*" here defeats
+      the point of namespace-level ACLs in the gateway.
+    patterns:
+      - pattern-regex: '(?m)^\s*(scope|permissions|allow_from|egress)\s*:\s*(\*|"all"|''all'')\s*$'
