@@ -127,18 +127,26 @@ jobs:
       - name: Sign the SBOM (cosign, keyless)
         env:
           COSIGN_EXPERIMENTAL: "1"
+        # cosign v3 removed --output-signature/--output-certificate entirely
+        # (confirmed live 2026-07-24 against the installed v3.1.1 -- both flags
+        # are gone from `cosign sign-blob --help` and the command now hard-errors
+        # "must specify --bundle with --new-bundle-format"). The old two-file
+        # .sig+.pem output is replaced by a single Sigstore bundle file
+        # (signature+certificate+transparency-log-proof together). This is a
+        # cascading change: automation/scripts/gateway_sync.py's
+        # verify_attestation() still expects the old two-file shape and needs
+        # its own update to verify against a single .bundle file -- not done as
+        # part of this PR, flagged separately (see PR description).
         run: |
           SBOM_FILE="sbom/${{ inputs.server-name }}-$(date +%Y.%m.%d).json"
           cosign sign-blob --yes \
-            --output-signature "${SBOM_FILE}.sig" \
-            --output-certificate "${SBOM_FILE}.pem" \
+            --bundle "${SBOM_FILE}.bundle" \
             "$SBOM_FILE"
       - name: Verify the signature we just produced
         run: |
           SBOM_FILE="sbom/${{ inputs.server-name }}-$(date +%Y.%m.%d).json"
           cosign verify-blob \
-            --signature "${SBOM_FILE}.sig" \
-            --certificate "${SBOM_FILE}.pem" \
+            --bundle "${SBOM_FILE}.bundle" \
             --certificate-identity-regexp ".*" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "$SBOM_FILE"
@@ -146,9 +154,9 @@ jobs:
         with:
           name: sbom-${{ inputs.server-name }}
           # The calling repo's PR is expected to commit these files (sbom.json +
-          # .sig + .pem) at the path referenced by the manifest's
-          # security.attestation field -- this job produces them, it doesn't
-          # commit on the caller's behalf, since which repo/path is caller-specific.
+          # .bundle) at the path referenced by the manifest's security.attestation
+          # field -- this job produces them, it doesn't commit on the caller's
+          # behalf, since which repo/path is caller-specific.
           path: sbom/
 
   policy-check:
