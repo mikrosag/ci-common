@@ -53,10 +53,10 @@ on:
         default: "CRITICAL,HIGH"
         required: false
     secrets:
-      ci-common-read-app-id:
+      CI_COMMON_READ_APP_ID:
         description: "App ID of the mcp-gateway-ci-common-reader GitHub App (Contents: Read-only, installed only on ci-common). The default GITHUB_TOKEN in a caller's workflow run can't check out a different private repo's contents, which mcp-semgrep-rules and policy-check both need (they read ci-common's own policy/ and semgrep-rules/ files) -- a short-lived App installation token stands in for that. Same explicit-secrets-block convention as notify-telegram.yml's bot-token/chat-id."
         required: true
-      ci-common-read-app-private-key:
+      CI_COMMON_READ_APP_PRIVATE_KEY:
         description: "Private key (PEM) for the mcp-gateway-ci-common-reader GitHub App."
         required: true
 
@@ -98,8 +98,8 @@ jobs:
       - uses: actions/create-github-app-token@v1
         id: ci-common-read-token
         with:
-          app-id: ${{ secrets.ci-common-read-app-id }}
-          private-key: ${{ secrets.ci-common-read-app-private-key }}
+          app-id: ${{ secrets.CI_COMMON_READ_APP_ID }}
+          private-key: ${{ secrets.CI_COMMON_READ_APP_PRIVATE_KEY }}
           owner: mikrosag
           repositories: ci-common
       - uses: actions/checkout@v4
@@ -170,8 +170,8 @@ jobs:
       - uses: actions/create-github-app-token@v1
         id: ci-common-read-token
         with:
-          app-id: ${{ secrets.ci-common-read-app-id }}
-          private-key: ${{ secrets.ci-common-read-app-private-key }}
+          app-id: ${{ secrets.CI_COMMON_READ_APP_ID }}
+          private-key: ${{ secrets.CI_COMMON_READ_APP_PRIVATE_KEY }}
           owner: mikrosag
           repositories: ci-common
       - uses: actions/checkout@v4
