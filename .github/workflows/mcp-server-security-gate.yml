@@ -95,7 +95,7 @@ jobs:
       # installation token from a dedicated read-only GitHub App
       # (mcp-gateway-ci-common-reader, Contents: Read, installed only on
       # ci-common) rather than a long-lived PAT.
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@v3
         id: ci-common-read-token
         with:
           app-id: ${{ secrets.CI_COMMON_READ_APP_ID }}
@@ -167,7 +167,7 @@ jobs:
           path: server
       # See the identical checkout in mcp-semgrep-rules above for why this
       # needs an explicit token.
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@v3
         id: ci-common-read-token
         with:
           app-id: ${{ secrets.CI_COMMON_READ_APP_ID }}
