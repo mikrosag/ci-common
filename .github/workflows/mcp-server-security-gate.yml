@@ -52,6 +52,11 @@ on:
         type: string
         default: "CRITICAL,HIGH"
         required: false
+      waive-container-scan:
+        description: "Run container-scan and report findings, but don't let them fail gate-summary. For a documented, human-approved accepted-risk case only -- the calling repo's workflow must carry a comment naming who approved it, when, and why. See container-scan.yml's `waive` input."
+        type: boolean
+        default: false
+        required: false
     secrets:
       CI_COMMON_READ_APP_ID:
         description: "App ID of the mcp-gateway-ci-common-reader GitHub App (Contents: Read-only, installed only on ci-common). The default GITHUB_TOKEN in a caller's workflow run can't check out a different private repo's contents, which mcp-semgrep-rules and policy-check both need (they read ci-common's own policy/ and semgrep-rules/ files) -- a short-lived App installation token stands in for that. Same explicit-secrets-block convention as notify-telegram.yml's bot-token/chat-id."
@@ -76,6 +81,7 @@ jobs:
     with:
       dockerfile: ${{ inputs.dockerfile }}
       severity: ${{ inputs.severity }}
+      waive: ${{ inputs.waive-container-scan }}
 
   mcp-semgrep-rules:
     runs-on: [self-hosted, macOS]
