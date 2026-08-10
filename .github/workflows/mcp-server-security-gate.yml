@@ -108,17 +108,28 @@ jobs:
           ref: main
           token: ${{ steps.ci-common-read-token.outputs.token }}
           path: ci-common
+      # Scoped to server-path, not the whole checkout: for a dedicated
+      # single-server repo (server-path defaults to ".") this scans the same
+      # thing either way, but for a multi-service monorepo caller (e.g.
+      # homelab) scanning "server" unscoped picks up every other unrelated
+      # service's Python files too. Confirmed live 2026-08-10: homelab's
+      # agentregistry onboarding flagged 2 findings in services/greenbone/
+      # -- entirely unrelated code the gate had no business scanning.
       - name: MCP-specific semgrep rules
         working-directory: server
-        run: semgrep scan --config ../ci-common/semgrep-rules/mcp-server.yml --error
+        run: semgrep scan --config ../ci-common/semgrep-rules/mcp-server.yml --error -- "${{ inputs.server-path }}"
 
   sbom-sign:
     runs-on: [self-hosted, macOS]
     needs: [container-scan]
     steps:
       - uses: actions/checkout@v4
+      # No working-directory here: dockerfile is already root-relative (per
+      # its own input description above), so cwd stays repo root. Setting
+      # working-directory to server-path used to double the path for
+      # monorepo callers passing e.g. dockerfile=services/agentregistry/Dockerfile
+      # with server-path=services/agentregistry -- confirmed live 2026-08-10.
       - name: Build image for SBOM
-        working-directory: ${{ inputs.server-path }}
         run: docker build -f "${{ inputs.dockerfile }}" -t "local/mcp-sbom:${{ inputs.server-name }}-${{ github.sha }}" .
       - name: Generate SBOM (Syft, CycloneDX)
         run: |
@@ -180,9 +191,16 @@ jobs:
           ref: main
           token: ${{ steps.ci-common-read-token.outputs.token }}
           path: ci-common
+      # working-directory is just "server" (the checkout root), not
+      # "server/${{ inputs.server-path }}": compose-file is already
+      # root-relative (per its own input description above). The extra
+      # server-path suffix used to double the path for monorepo callers --
+      # confirmed live 2026-08-10 (homelab's agentregistry onboarding failed
+      # with "server/services/agentregistry/services/agentregistry/docker-compose.yml:
+      # no such file or directory").
       - name: Resolve compose config (if this server has one)
         if: inputs.compose-file != ''
-        working-directory: server/${{ inputs.server-path }}
+        working-directory: server
         run: docker compose -f "${{ inputs.compose-file }}" config > "${{ github.workspace }}/compose-resolved.yml"
       - name: conftest -- compose hardening
         if: inputs.compose-file != ''
