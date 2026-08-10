@@ -80,7 +80,7 @@ jobs:
   mcp-semgrep-rules:
     runs-on: [self-hosted, macOS]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: server
       # Checking out ci-common from a caller repo's workflow run needs a token
@@ -102,7 +102,7 @@ jobs:
           private-key: ${{ secrets.CI_COMMON_READ_APP_PRIVATE_KEY }}
           owner: mikrosag
           repositories: ci-common
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: mikrosag/ci-common
           ref: main
@@ -123,7 +123,7 @@ jobs:
     runs-on: [self-hosted, macOS]
     needs: [container-scan]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # No working-directory here: dockerfile is already root-relative (per
       # its own input description above), so cwd stays repo root. Setting
       # working-directory to server-path used to double the path for
@@ -173,7 +173,7 @@ jobs:
   policy-check:
     runs-on: [self-hosted, macOS]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: server
       # See the identical checkout in mcp-semgrep-rules above for why this
@@ -185,7 +185,7 @@ jobs:
           private-key: ${{ secrets.CI_COMMON_READ_APP_PRIVATE_KEY }}
           owner: mikrosag
           repositories: ci-common
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: mikrosag/ci-common
           ref: main
