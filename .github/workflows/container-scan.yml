@@ -13,6 +13,11 @@ on:
         type: string
         default: "CRITICAL,HIGH"
         required: false
+      waive:
+        description: "Run the scan and report findings, but don't fail the job on them. For a documented, human-approved accepted-risk case only (e.g. a pinned third-party base image with no available fix) -- the calling repo's workflow must carry a comment naming who approved it, when, and why. This does not hide findings from the log, only from the pass/fail gate."
+        type: boolean
+        default: false
+        required: false
 
 jobs:
   trivy:
@@ -22,4 +27,5 @@ jobs:
       - name: Build image for scanning
         run: docker build -f "${{ inputs.dockerfile }}" -t local/trivy-scan:${{ github.sha }} .
       - name: Trivy scan
+        continue-on-error: ${{ inputs.waive }}
         run: trivy image --exit-code 1 --severity "${{ inputs.severity }}" local/trivy-scan:${{ github.sha }}
