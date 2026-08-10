@@ -12,8 +12,8 @@
 
 | Repo | Workflows used |
 |---|---|
-| `automation` | security-checks, sca-scan, dynamic-tests-nix, notify-telegram |
-| `homelab` | security-checks, sca-scan, container-scan, lint-js, notify-telegram |
+| `automation` | security-checks, sca-scan, dynamic-tests-nix |
+| `homelab` | security-checks, sca-scan, container-scan, lint-js |
 | `mac-config` | (future — currently no CI) |
 
 ## Critical rules

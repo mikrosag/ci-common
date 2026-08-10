@@ -10,7 +10,7 @@ gh run list --repo mikrosag/ci-common --limit 5
 gh pr list --repo mikrosag/ci-common
 ```
 
-The `notify-telegram.yml` workflow here is what sends Telegram notifications to Frans when any pipeline fails. The bot token and chat ID are org-level secrets (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`).
+There is no pipeline failure notification. A `notify-telegram.yml` workflow used to exist but never delivered a message (org-level secrets don't reach private repos on the Free plan) and was removed 2026-08-10 — Frans does not want Telegram notifications for CI. Check status with the `gh run list` command above; don't re-add a notifier without asking.
 
 ## Critical rules
 
