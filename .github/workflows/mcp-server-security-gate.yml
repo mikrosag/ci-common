@@ -59,7 +59,7 @@ on:
         required: false
     secrets:
       CI_COMMON_READ_APP_ID:
-        description: "App ID of the mcp-gateway-ci-common-reader GitHub App (Contents: Read-only, installed only on ci-common). The default GITHUB_TOKEN in a caller's workflow run can't check out a different private repo's contents, which mcp-semgrep-rules and policy-check both need (they read ci-common's own policy/ and semgrep-rules/ files) -- a short-lived App installation token stands in for that. Same explicit-secrets-block convention as notify-telegram.yml's bot-token/chat-id."
+        description: "App ID of the mcp-gateway-ci-common-reader GitHub App (Contents: Read-only, installed only on ci-common). The default GITHUB_TOKEN in a caller's workflow run can't check out a different private repo's contents, which mcp-semgrep-rules and policy-check both need (they read ci-common's own policy/ and semgrep-rules/ files) -- a short-lived App installation token stands in for that. Declared in an explicit secrets block rather than relying on `secrets: inherit`. Note these must be set as REPO-level secrets on each calling repo -- org-level secrets resolve empty on this org's Free plan (see README)."
         required: true
       CI_COMMON_READ_APP_PRIVATE_KEY:
         description: "Private key (PEM) for the mcp-gateway-ci-common-reader GitHub App."

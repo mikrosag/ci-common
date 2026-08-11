@@ -11,7 +11,6 @@
 | `dynamic-tests-nix.yml` | automation | pytest in Nix devShell |
 | `container-scan.yml` | homelab | trivy (CRITICAL/HIGH fails) |
 | `lint-js.yml` | homelab | ESLint |
-| `notify-telegram.yml` | all repos | failure notifications |
 
 ## Pipeline interaction
 

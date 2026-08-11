@@ -16,16 +16,6 @@ Shared CI/CD infrastructure for repos in the `mikrosag` org. There is one self-h
 - `.github/workflows/container-scan.yml` — reusable workflow: builds a Dockerfile and scans the image with `trivy`, failing on CRITICAL/HIGH by default. Only relevant for repos that build a container.
 - `.github/workflows/lint-js.yml` — reusable workflow: `npm ci` + ESLint, for JavaScript/TypeScript repos (see `templates/lint-js/`).
 - `.github/workflows/mcp-server-security-gate.yml` — reusable workflow: the fail-closed admission gate for onboarding a new MCP server onto `mcp-gateway`. Chains `security-checks.yml` + `sca-scan.yml` + `container-scan.yml` with three MCP-specific stages: `mcp-semgrep-rules` (prompt-injection-shaped tool descriptions, unrestricted filesystem paths, unsanitized shell-out, overly broad scopes — see `semgrep-rules/mcp-server.yml`), `sbom-sign` (Syft SBOM + keyless `cosign sign-blob`), and `policy-check` (`conftest` against `policy/mcp-server-compose.rego` + `policy/mcp-server-manifest.rego`, the latter also covering the runtime egress-allowlist requirement). See `templates/mcp-server-registry/` for how to wire a calling repo's `ci.yml`, and `homelab/mcp-gateway/registry/README.md` for the manifest schema and the `gateway-sync` flow this gate feeds into. Requires `cosign`/`syft`/`conftest` on the runner (added to `mac-config`'s pipeline-critical Homebrew list).
-- `.github/workflows/notify-telegram.yml` — reusable workflow: posts a message to Frans's Telegram (the existing OpenClaw "HomeClaw" bot) via the Bot API. Call with `secrets: inherit` so the org-level `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` secrets pass through:
-  ```yaml
-  notify-failure:
-    needs: [other-job]
-    if: failure()
-    uses: mikrosag/ci-common/.github/workflows/notify-telegram.yml@main
-    secrets: inherit
-    with:
-      message: "🚨 something failed — link to the run"
-  ```
 - `templates/launchd-deploy/` — for repos that ship as scheduled launchd jobs on the Mac (the `automation` repo is the reference implementation of this).
 - `templates/orbstack-deploy/` — for repos that ship as a container via OrbStack on the Mac.
 - `templates/nix-test/`, `templates/orbstack-test/` — scaffolding for the two dynamic-test reusable workflows above.
@@ -41,8 +31,8 @@ Shared CI/CD infrastructure for repos in the `mikrosag` org. There is one self-h
 - **Deploy logic stays per-repo** (different repos deploy to different places — launchd vs. OrbStack), but should start from the matching template here rather than being designed from scratch.
 - **`ruff`, `osv-scanner`, `trivy` are installed via Homebrew on the runner Mac** (not containerized), same pattern as `gitleaks`/`semgrep`. If any goes missing: `brew install ruff osv-scanner trivy`.
 - **Snyk, Aqua (platform), and similar paid SaaS scanners are deliberately not used.** Free/OSS equivalents cover the same ground: `osv-scanner` for SCA, `trivy` for container images, `semgrep`+`gitleaks` for SAST/secrets. Don't add a paid tool without a clear reason it's not covered.
-- **`TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are org-level secrets** (set via `gh secret set ... --org mikrosag`), visible to every repo. This is the existing OpenClaw bot token, reused rather than creating a second bot — don't print these values in logs or commit them anywhere, even in this private repo.
-- **Notify on pipeline failure, not on every run.** Wire `notify-telegram.yml` with `if: failure()` so it only fires when something actually breaks — a message on every green run is noise, not signal.
+- **There is no pipeline failure notification, by design.** A `notify-telegram.yml` reusable workflow used to exist and was called with `if: failure()` from every deploy workflow. It never delivered a single message: its `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` came from org-level secrets, which on this org's Free plan are unavailable to private repos, so both resolved empty — and its `curl` had no `--fail`, so the job reported success anyway. Removed 2026-08-10 rather than repaired: Frans does not want Telegram notifications for CI. Check run status via the GitHub UI or `gh run list`. **Don't re-add a notifier without asking.**
+- **Org-level Actions secrets do not work in this org.** Free plan + private repos means every `${{ secrets.* }}` sourced from org scope resolves to an empty string, silently. Use repo-level secrets (`gh secret set ... --repo mikrosag/<repo>`); see `mcp-spotlight-facts/AGENTS.md` for the worked example.
 - **Agent instructions:** every repo should have its own `AGENTS.md` (canonical) with tool-specific stubs (`CLAUDE.md`, `GEMINI.md`, etc.) — see `automation/AGENTS.md` for the pattern. This repo only carries `AGENTS.md` + `CLAUDE.md` since it's infra that's edited rarely; replicate the fuller stub set in repos that get frequent day-to-day edits.
 
 ## Kanban (GitHub Projects v2) + Notion use-case specs
