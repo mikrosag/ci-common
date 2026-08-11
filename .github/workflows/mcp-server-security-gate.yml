@@ -149,11 +149,18 @@ jobs:
         # are gone from `cosign sign-blob --help` and the command now hard-errors
         # "must specify --bundle with --new-bundle-format"). The old two-file
         # .sig+.pem output is replaced by a single Sigstore bundle file
-        # (signature+certificate+transparency-log-proof together). This is a
-        # cascading change: automation/scripts/gateway_sync.py's
-        # verify_attestation() still expects the old two-file shape and needs
-        # its own update to verify against a single .bundle file -- not done as
-        # part of this PR, flagged separately (see PR description).
+        # (signature+certificate+transparency-log-proof together).
+        #
+        # The cascading change this note used to flag as outstanding --
+        # automation/scripts/gateway_sync.py's verify_attestation() still
+        # expecting the old two-file .sig/.pem shape -- has since been made:
+        # that function now reads `<attestation>.bundle` and shells out to
+        # `cosign verify-blob --bundle`. Confirmed end-to-end 2026-08-10 by
+        # verifying a committed pair straight out of homelab's registry
+        # (mcp-gateway/registry/sbom/mcp-spotlight-facts.json{,.bundle}) with
+        # the exact arguments gateway_sync uses: "Verified OK", exit 0. Nothing
+        # is outstanding here -- the stale wording had already sent one reader
+        # chasing a bug that no longer exists.
         run: |
           SBOM_FILE="sbom/${{ inputs.server-name }}-$(date +%Y.%m.%d).json"
           cosign sign-blob --yes \
