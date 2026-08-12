@@ -1,11 +1,41 @@
 name: sca-scan
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      osv-scanner-version:
+        description: "osv-scanner release to download. Bump together with osv-scanner-sha256."
+        type: string
+        default: "v2.4.0"
+        required: false
+      osv-scanner-sha256:
+        description: "sha256 of osv-scanner_linux_amd64 for that release, from the release's own osv-scanner_SHA256SUMS."
+        type: string
+        default: "15314940c10d26af9c6649f150b8a47c1262e8fc7e17b1d1029b0e479e8ed8a0"
+        required: false
 
 jobs:
   osv-scanner:
-    runs-on: [self-hosted, macOS]
+    # FIRST JOB IN THE ORG ON A GITHUB-HOSTED RUNNER -- this is a deliberate,
+    # measured pilot, not a wholesale migration.
+    #
+    # Everything else runs on the single self-hosted Mac, which means every job
+    # in every repo serialises through one machine: 55 jobs took ~40 minutes of
+    # wall clock for ~4 minutes of actual work on 2026-08-12. Hosted runners fix
+    # that by running concurrently, but they bill per job rounded UP to a whole
+    # minute, and these jobs average ~29s -- so the cost is roughly 2x the real
+    # compute.
+    #
+    # The Free plan gives 2000 Linux minutes/month for private repos. Current
+    # usage is 21-44 min/month (Dependabot only), net $0. Projection for moving
+    # ~5 jobs per run is ~925 min/month, comfortably inside the allowance -- but
+    # that is a projection, so this one job goes first and the real billed
+    # figure decides how much else follows.
+    #
+    # sca-scan was chosen as the pilot precisely because it is the safest thing
+    # to get wrong: it is observability-only (see below), so if this misbehaves
+    # nothing is gated and no merge is blocked.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     # Observability-only for now: osv-scanner's severity data is inconsistent across
     # ecosystems (mixed CVSS string formats, not always a clean numeric score), so
@@ -14,6 +44,32 @@ jobs:
     # triaged baseline and a real severity-parsing step worth maintaining.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # osv-scanner is a brew install on the Mac runner; ubuntu-latest has no
+      # copy, so it is fetched here. Pinned by version AND sha256 rather than
+      # using a third-party setup action: same reasoning as the semgrep ruleset
+      # pin in security-checks.yml -- a tool that can change under us turns a
+      # gate's verdict into something we cannot reason about. The hash comes
+      # from the release's own osv-scanner_SHA256SUMS and was cross-checked
+      # against it, not merely computed from whatever the download returned.
+      - name: Install osv-scanner (pinned, checksum-verified)
+        run: |
+          curl -sSfL -o /tmp/osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/${{ inputs.osv-scanner-version }}/osv-scanner_linux_amd64"
+          actual="$(sha256sum /tmp/osv-scanner | awk '{print $1}')"
+          expected="${{ inputs.osv-scanner-sha256 }}"
+          if [ "$actual" != "$expected" ]; then
+            echo "FAIL: osv-scanner ${{ inputs.osv-scanner-version }} checksum mismatch." >&2
+            echo "  expected: ${expected}" >&2
+            echo "  got:      ${actual}" >&2
+            echo "Refusing to run an unverified scanner binary. If the release was" >&2
+            echo "re-cut, take the new value from its osv-scanner_SHA256SUMS asset" >&2
+            echo "and update osv-scanner-sha256 here in a PR." >&2
+            exit 1
+          fi
+          chmod +x /tmp/osv-scanner
+          /tmp/osv-scanner --version
+
       - name: OSV-Scanner (report only, does not fail the build)
         run: |
-          osv-scanner scan source --recursive . || true
+          /tmp/osv-scanner scan source --recursive . || true
