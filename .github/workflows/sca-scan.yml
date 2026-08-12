@@ -6,6 +6,7 @@ on:
 jobs:
   osv-scanner:
     runs-on: [self-hosted, macOS]
+    timeout-minutes: 20
     # Observability-only for now: osv-scanner's severity data is inconsistent across
     # ecosystems (mixed CVSS string formats, not always a clean numeric score), so
     # there's no reliable threshold to gate on yet. This surfaces findings in every
