@@ -71,13 +71,13 @@ permissions:
 
 jobs:
   secret-scan-and-sast:
-    uses: mikrosag/ci-common/.github/workflows/security-checks.yml@main
+    uses: mikrosag/ci-common/.github/workflows/security-checks.yml@v1
 
   sca-scan:
-    uses: mikrosag/ci-common/.github/workflows/sca-scan.yml@main
+    uses: mikrosag/ci-common/.github/workflows/sca-scan.yml@v1
 
   container-scan:
-    uses: mikrosag/ci-common/.github/workflows/container-scan.yml@main
+    uses: mikrosag/ci-common/.github/workflows/container-scan.yml@v1
     with:
       dockerfile: ${{ inputs.dockerfile }}
       severity: ${{ inputs.severity }}
@@ -85,6 +85,7 @@ jobs:
 
   mcp-semgrep-rules:
     runs-on: [self-hosted, macOS]
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -127,6 +128,7 @@ jobs:
 
   sbom-sign:
     runs-on: [self-hosted, macOS]
+    timeout-minutes: 20
     needs: [container-scan]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -185,6 +187,7 @@ jobs:
 
   policy-check:
     runs-on: [self-hosted, macOS]
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -223,6 +226,7 @@ jobs:
 
   gate-summary:
     runs-on: [self-hosted, macOS]
+    timeout-minutes: 20
     needs:
       [
         secret-scan-and-sast,
