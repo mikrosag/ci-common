@@ -8,10 +8,15 @@ on:
         type: string
         default: "p/default"
         required: false
-      semgrep-ruleset-sha256:
-        description: "Expected sha256 of the fetched ruleset. The scan fails if the registry serves anything else -- see the sast job for why."
+      semgrep-ruleset-hash:
+        description: "Expected canonical hash of the fetched ruleset (rules sorted by id, then hashed -- NOT a hash of the raw bytes, see the sast job). The scan fails if the registry serves different rules."
         type: string
-        default: "057ec1f457cbb6d4292f5ca353901a936fd9b9aa75870550ccfcfd4c1b5a6c95"
+        default: "b60be047ae607844e9a68d5d7d43355d060f177520323e4f1db626c5a0a20317"
+        required: false
+      semgrep-rule-count:
+        description: "Expected number of rules in the ruleset. A cheap second signal that reads more usefully than a hash when it changes."
+        type: string
+        default: "1074"
         required: false
       semgrep-version:
         description: "Expected semgrep engine version. Verified, not installed -- the binary comes from Homebrew on the runner."
@@ -72,22 +77,34 @@ jobs:
         #
         # The file is untracked, and semgrep only scans git-tracked files, so it
         # does not end up scanning its own ruleset.
+        # Hashed CANONICALLY, not byte-for-byte. The registry serves the same
+        # rules in a different order between requests: two fetches an hour apart
+        # gave identical byte counts and an identical set of 1074 rule ids, but
+        # different sha256s. A raw byte hash therefore fails at random, which
+        # would make this gate noise rather than signal -- exactly the outcome
+        # pinning is meant to prevent. Sorting the rules by id and hashing that
+        # is stable against reordering while still catching a rule being added,
+        # removed, or edited.
         run: |
           curl -sSfL "https://semgrep.dev/c/${{ inputs.semgrep-ruleset }}" -o .semgrep-pinned.yaml
-          actual="$(shasum -a 256 .semgrep-pinned.yaml | awk '{print $1}')"
-          expected="${{ inputs.semgrep-ruleset-sha256 }}"
+          out="$(python3 -c 'import yaml, hashlib, json; rules = sorted(yaml.safe_load(open(".semgrep-pinned.yaml")).get("rules", []), key=lambda r: r.get("id", "")); print(hashlib.sha256(json.dumps(rules, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), len(rules))')"
+          actual="${out%% *}"
+          count="${out##* }"
+          expected="${{ inputs.semgrep-ruleset-hash }}"
+          expected_count="${{ inputs.semgrep-rule-count }}"
           if [ "$actual" != "$expected" ]; then
             echo "FAIL: the ${{ inputs.semgrep-ruleset }} ruleset changed upstream." >&2
-            echo "  expected sha256: ${expected}" >&2
-            echo "  got sha256:      ${actual}" >&2
+            echo "  expected hash:  ${expected}  (${expected_count} rules)" >&2
+            echo "  got hash:       ${actual}  (${count} rules)" >&2
             echo "" >&2
             echo "This is not necessarily a problem -- it means the registry published" >&2
-            echo "different rules. Review the change, then update semgrep-ruleset-sha256" >&2
-            echo "in ci-common's security-checks.yml in a PR, so the new rules land" >&2
-            echo "deliberately and every repo picks them up at the same moment." >&2
+            echo "different rules. Review what changed, then update semgrep-ruleset-hash" >&2
+            echo "and semgrep-rule-count in ci-common's security-checks.yml in a PR, so" >&2
+            echo "the new rules land deliberately and every repo picks them up at the" >&2
+            echo "same moment rather than one repo at a time by surprise." >&2
             exit 1
           fi
-          echo "ruleset ${{ inputs.semgrep-ruleset }} verified (sha256 ${actual})"
+          echo "ruleset ${{ inputs.semgrep-ruleset }} verified (${count} rules, canonical ${actual})"
 
       - name: semgrep
         run: semgrep scan --config .semgrep-pinned.yaml --error
