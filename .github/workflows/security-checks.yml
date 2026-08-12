@@ -3,10 +3,20 @@ name: security-checks
 on:
   workflow_call:
     inputs:
-      semgrep-config:
-        description: "Semgrep ruleset (default: auto-detect)"
+      semgrep-ruleset:
+        description: "Semgrep registry ruleset to fetch. Change this and semgrep-ruleset-sha256 together."
         type: string
-        default: auto
+        default: "p/default"
+        required: false
+      semgrep-ruleset-sha256:
+        description: "Expected sha256 of the fetched ruleset. The scan fails if the registry serves anything else -- see the sast job for why."
+        type: string
+        default: "057ec1f457cbb6d4292f5ca353901a936fd9b9aa75870550ccfcfd4c1b5a6c95"
+        required: false
+      semgrep-version:
+        description: "Expected semgrep engine version. Verified, not installed -- the binary comes from Homebrew on the runner."
+        type: string
+        default: "1.168.0"
         required: false
 
 jobs:
@@ -23,5 +33,61 @@ jobs:
     runs-on: [self-hosted, macOS]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # This job used to run `semgrep scan --config auto`. `auto` resolves the
+      # ruleset from the registry at scan time, so the set of rules could change
+      # without anything in this org changing. On 2026-08-11 it did: the ruleset
+      # acquired github-actions-mutable-action-tag, and mcp-gateway and
+      # agent-bridge both went red on code neither of them had touched. There
+      # was no way to tell that from a real regression, which is the actual
+      # problem -- a gate whose verdict can change on its own teaches people to
+      # dismiss its failures.
+      #
+      # Both halves of the scan are now pinned: the engine below, and the rules
+      # in the two steps after it.
+      - name: Verify the semgrep engine version
+        # Verified rather than installed. semgrep comes from Homebrew on the
+        # shared runner (see README), so a `brew upgrade` can move it under us.
+        # Failing loudly on drift beats silently scanning with a different
+        # engine; pinning by installing here would fight the host's package
+        # manager on every run.
+        run: |
+          actual="$(semgrep --version 2>/dev/null | head -1)"
+          expected="${{ inputs.semgrep-version }}"
+          if [ "$actual" != "$expected" ]; then
+            echo "FAIL: semgrep engine drifted -- expected ${expected}, runner has ${actual}." >&2
+            echo "Either pin the runner back (brew), or bump semgrep-version in" >&2
+            echo "ci-common's security-checks.yml after checking what changed." >&2
+            exit 1
+          fi
+          echo "semgrep engine ${actual} as expected"
+
+      - name: Fetch and verify the pinned ruleset
+        # Written to the workspace root, not a temp dir, on purpose: semgrep
+        # namespaces rule ids by the path of the config file, so an absolute
+        # path leaks the runner's directory layout into every rule id and makes
+        # them differ between machines. A cwd-relative file yields the exact
+        # same ids `auto` produced, which keeps output readable and keeps
+        # existing `// nosemgrep: <rule-id>` suppressions matching.
+        #
+        # The file is untracked, and semgrep only scans git-tracked files, so it
+        # does not end up scanning its own ruleset.
+        run: |
+          curl -sSfL "https://semgrep.dev/c/${{ inputs.semgrep-ruleset }}" -o .semgrep-pinned.yaml
+          actual="$(shasum -a 256 .semgrep-pinned.yaml | awk '{print $1}')"
+          expected="${{ inputs.semgrep-ruleset-sha256 }}"
+          if [ "$actual" != "$expected" ]; then
+            echo "FAIL: the ${{ inputs.semgrep-ruleset }} ruleset changed upstream." >&2
+            echo "  expected sha256: ${expected}" >&2
+            echo "  got sha256:      ${actual}" >&2
+            echo "" >&2
+            echo "This is not necessarily a problem -- it means the registry published" >&2
+            echo "different rules. Review the change, then update semgrep-ruleset-sha256" >&2
+            echo "in ci-common's security-checks.yml in a PR, so the new rules land" >&2
+            echo "deliberately and every repo picks them up at the same moment." >&2
+            exit 1
+          fi
+          echo "ruleset ${{ inputs.semgrep-ruleset }} verified (sha256 ${actual})"
+
       - name: semgrep
-        run: semgrep scan --config "${{ inputs.semgrep-config }}" --error
+        run: semgrep scan --config .semgrep-pinned.yaml --error
