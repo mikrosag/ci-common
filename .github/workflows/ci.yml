@@ -1,10 +1,9 @@
 name: ci
 
 # ci-common had no CI of its own until 2026-08-13 -- the repo defining every
-# other repo's security gate was the only one not subject to it. That is not
-# just untidy: on 2026-08-13 a scan of this repo found 17 run-shell-injection
-# findings across its reusable workflows, none of which any pipeline would ever
-# have reported, because nothing scanned here.
+# other repo's security gate was the only one not subject to it. A scan then
+# found 17 run-shell-injection findings across its reusable workflows that
+# nothing would ever have reported.
 #
 # This repo cannot call its own reusable workflows the way consumers do without
 # a chicken-and-egg on the @v1 tag (a PR here would be gated by the tag it is
@@ -12,6 +11,22 @@ name: ci
 # They deliberately mirror what security-checks.yml does, including the pinned
 # ruleset and engine -- if those drift apart, the pin is no longer being tested
 # by the repo that owns it.
+#
+# WHY ubuntu-latest AND NOT THE SELF-HOSTED MAC
+# ---------------------------------------------
+# This repo is going public. `pull_request` + a self-hosted runner + a public
+# repo means an outside contributor's PR can propose code that executes on the
+# Mac Mini -- the machine running Home Assistant, AdGuard, the gateway, and
+# holding every mikrosag repo's secrets. GitHub gates first-time contributors
+# behind manual approval, but that is a human eyeballing arbitrary code, not a
+# boundary.
+#
+# Running on GitHub's ephemeral runners removes the exposure rather than gating
+# it: a hostile PR gets a throwaway VM with no access to anything of Frans's.
+# The cost is that gitleaks/semgrep/conftest are Homebrew installs on the Mac
+# and absent here, so each is installed pinned and checksum-verified below --
+# same reasoning as sca-scan.yml, and the checksums come from each release's own
+# published checksums file rather than from whatever the download returned.
 
 on:
   pull_request:
@@ -21,32 +36,63 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege: nothing here needs to write to the repo, and on a public repo
+# this token is reachable by workflow code proposed in a fork PR.
+permissions:
+  contents: read
+
 jobs:
   scan:
-    runs-on: [self-hosted, macOS]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+      SEMGREP_VERSION: "1.168.0"
+      RULESET: "p/default"
+      EXPECTED_HASH: "b60be047ae607844e9a68d5d7d43355d060f177520323e4f1db626c5a0a20317"
+      EXPECTED_COUNT: "1074"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
+      - name: Install pinned tools
+        run: |
+          curl -sSfL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          actual="$(sha256sum /tmp/gitleaks.tar.gz | awk '{print $1}')"
+          if [ "$actual" != "$GITLEAKS_SHA256" ]; then
+            echo "FAIL: gitleaks ${GITLEAKS_VERSION} checksum mismatch." >&2
+            echo "  expected: $GITLEAKS_SHA256" >&2
+            echo "  got:      $actual" >&2
+            echo "Refusing to run an unverified secret scanner. If the release was" >&2
+            echo "re-cut, take the new value from its checksums.txt asset." >&2
+            exit 1
+          fi
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          chmod +x /tmp/gitleaks
+          /tmp/gitleaks version
+          # semgrep pins exactly via pip, so the engine check below is satisfied
+          # by construction here rather than by whatever brew last installed.
+          python3 -m pip install --quiet "semgrep==${SEMGREP_VERSION}" pyyaml
+          semgrep --version
+
       - name: gitleaks
         id: gitleaks
         continue-on-error: true
-        run: gitleaks detect --source . --no-banner --redact
+        run: /tmp/gitleaks detect --source . --no-banner --redact
 
-      # Same pinned engine + ruleset as security-checks.yml. Kept in step with
-      # it by hand: these values appear in both files, and a PR changing the pin
-      # there should change it here too.
+      # Kept identical to security-checks.yml's pin. These values appear in both
+      # files; a PR changing the pin there must change it here too, or this repo
+      # stops testing the thing it ships.
       - name: Verify the semgrep engine version
         id: engine
         continue-on-error: true
-        env:
-          EXPECTED_VERSION: "1.168.0"
         run: |
           actual="$(semgrep --version 2>/dev/null | head -1)"
-          if [ "$actual" != "$EXPECTED_VERSION" ]; then
-            echo "FAIL: semgrep engine drifted -- expected ${EXPECTED_VERSION}, runner has ${actual}." >&2
+          if [ "$actual" != "$SEMGREP_VERSION" ]; then
+            echo "FAIL: semgrep engine drifted -- expected ${SEMGREP_VERSION}, got ${actual}." >&2
             exit 1
           fi
           echo "semgrep engine ${actual} as expected"
@@ -54,10 +100,6 @@ jobs:
       - name: Fetch and verify the pinned ruleset
         id: ruleset
         continue-on-error: true
-        env:
-          RULESET: "p/default"
-          EXPECTED_HASH: "b60be047ae607844e9a68d5d7d43355d060f177520323e4f1db626c5a0a20317"
-          EXPECTED_COUNT: "1074"
         run: |
           curl -sSfL "https://semgrep.dev/c/${RULESET}" -o .semgrep-pinned.yaml
           out="$(python3 -c 'import yaml, hashlib, json; rules = sorted(yaml.safe_load(open(".semgrep-pinned.yaml")).get("rules", []), key=lambda r: r.get("id", "")); print(hashlib.sha256(json.dumps(rules, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), len(rules))')"
@@ -78,6 +120,8 @@ jobs:
         continue-on-error: true
         run: semgrep scan --config .semgrep-pinned.yaml --error
 
+      # One verdict reporting every check, so a gitleaks failure does not hide a
+      # semgrep failure and send you round the loop twice.
       - name: Verdict
         run: |
           fail=0
@@ -99,17 +143,22 @@ jobs:
           echo "all security checks passed"
 
   # Every workflow here is consumed by other repos, so an unparseable one breaks
-  # their CI at dispatch with an error that points at THEIR repo, not this one.
-  # Cheap to catch here instead. This is not hypothetical: a multi-line
-  # `python3 -c` inside a block scalar broke container-scan.yml while it was
-  # being written on 2026-08-13, and only a local validation caught it.
+  # THEIR CI at dispatch with an error naming their repo, not this one. Cheap to
+  # catch here instead. Not hypothetical: a multi-line `python3 -c` inside a
+  # block scalar broke container-scan.yml while it was being written on
+  # 2026-08-13, and only local validation caught it.
   workflow-syntax:
-    runs-on: [self-hosted, macOS]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      CONFTEST_VERSION: "0.69.0"
+      CONFTEST_SHA256: "96fc2fbf11f0afde51256647127e6f00a64ce839a4d9a0a1aef2426c0e6f4b3f"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Validate every workflow and policy file parses
+
+      - name: Validate every workflow and dependabot config parses
         run: |
+          python3 -m pip install --quiet pyyaml
           fail=0
           for f in .github/workflows/*.yml .github/dependabot.yml; do
             if python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$f"; then
@@ -120,15 +169,31 @@ jobs:
             fi
           done
           exit "$fail"
+
       # `conftest verify` loads every policy in the bundle and runs any test_
-      # rules in it. Not `conftest parse` (that parses INPUT documents, not
-      # policies) and not `opa check` (opa is not installed on this runner --
-      # an earlier draft fell back to it and would have silently passed on a
-      # broken policy, since a missing binary and a valid policy both look like
-      # "no error" to a bare ||).
+      # rules. NOT `conftest parse` (that parses input documents, not policies)
+      # and not `opa check` -- an earlier draft used `opa check || conftest
+      # parse`, and since opa is not installed, the bare || made "missing
+      # binary" indistinguishable from "valid policy". It would have passed on a
+      # broken gate.
       #
       # This matters because the Rego bundle is the MCP admission gate's actual
       # decision logic: a policy that fails to load is a gate that stops
       # deciding.
+      - name: Install pinned conftest
+        run: |
+          curl -sSfL -o /tmp/conftest.tar.gz \
+            "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz"
+          actual="$(sha256sum /tmp/conftest.tar.gz | awk '{print $1}')"
+          if [ "$actual" != "$CONFTEST_SHA256" ]; then
+            echo "FAIL: conftest ${CONFTEST_VERSION} checksum mismatch." >&2
+            echo "  expected: $CONFTEST_SHA256" >&2
+            echo "  got:      $actual" >&2
+            exit 1
+          fi
+          tar -xzf /tmp/conftest.tar.gz -C /tmp conftest
+          chmod +x /tmp/conftest
+          /tmp/conftest --version
+
       - name: Rego policy bundle loads
-        run: conftest verify --policy policy
+        run: /tmp/conftest verify --policy policy
