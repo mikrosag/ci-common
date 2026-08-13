@@ -4,3 +4,14 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # A newly published action version can be malicious (a compromised
+    # maintainer account, a hijacked tag) and is usually yanked within days.
+    # A cooldown means Dependabot proposes a release only after it has survived
+    # in the wild for a week, rather than the day it appears. Costs a week of
+    # latency on updates; buys not being the first to install a bad one.
+    #
+    # This matters more here than in most repos: every action pinned in this
+    # repo runs on a shared, non-ephemeral self-hosted runner that has access to
+    # every mikrosag repo's secrets.
+    cooldown:
+      default-days: 7

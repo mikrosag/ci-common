@@ -20,7 +20,20 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Inputs reach the shell through env: rather than being interpolated into
+      # the script. GitHub expands ${{ }} by pasting text in before bash parses
+      # it, so caller-controlled input becomes script syntax; an env var stays
+      # data the shell never re-parses. (semgrep: run-shell-injection.)
       - name: Build test image
-        run: docker build -f "${{ inputs.dockerfile }}" -t local/dynamic-test:${{ github.sha }} .
+        env:
+          DOCKERFILE: ${{ inputs.dockerfile }}
+          TAG: ${{ github.sha }}
+        run: docker build -f "$DOCKERFILE" -t "local/dynamic-test:$TAG" .
+      # $TEST_COMMAND is deliberately UNQUOTED: it is a command line and must
+      # word-split into arguments for `docker run`. $TAG is quoted because it is
+      # a single value.
       - name: Run tests in container
-        run: docker run --rm local/dynamic-test:${{ github.sha }} ${{ inputs.test-command }}
+        env:
+          TAG: ${{ github.sha }}
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: docker run --rm "local/dynamic-test:$TAG" $TEST_COMMAND

