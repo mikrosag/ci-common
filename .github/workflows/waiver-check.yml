@@ -1,0 +1,161 @@
+name: waiver-check
+
+# Validates a repo's security-waivers.yaml and FAILS on an expired waiver.
+#
+# Why this exists: before 2026-08-13 the org's accepted risks lived in three
+# unrelated places -- .trivyignore entries, a `waive-container-scan: true` input,
+# and scattered `# nosemgrep:` comments -- none of which recorded an owner or an
+# expiry. An accepted risk with no expiry is accepted forever by default, which
+# is how a deliberate temporary exception silently becomes permanent. Nobody
+# decides that; it just happens.
+#
+# So this workflow treats the register as a TIMER, not a parking space. A waiver
+# past its `expires` date fails CI, forcing a human to either renew it with a
+# fresh justification or remove it because the finding is now fixed.
+#
+# Runs on ubuntu-latest -- pure YAML parsing, nothing macOS-specific.
+
+on:
+  workflow_call:
+    inputs:
+      register:
+        description: "Path to the waiver register, relative to the repo root."
+        type: string
+        default: "security-waivers.yaml"
+        required: false
+      warn-days:
+        description: "Warn (do not fail) when a waiver expires within this many days, so renewal is not a surprise on the morning it lapses."
+        type: string
+        default: "14"
+        required: false
+      required:
+        description: "Fail if the register is missing. Leave false for repos that legitimately have no waivers -- absence should not be an error, but a repo that HAS waivers should not be able to delete the file to silence this."
+        type: boolean
+        default: false
+        required: false
+      trivyignore:
+        description: "Path to .trivyignore, if the repo has one. Every CVE suppressed there must also appear in the register -- otherwise a finding can be silenced by editing one file, with no owner, justification or expiry recorded anywhere. Empty skips the cross-check."
+        type: string
+        default: ""
+        required: false
+
+jobs:
+  waiver-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate register and enforce expiry
+        env:
+          REGISTER: ${{ inputs.register }}
+          WARN_DAYS: ${{ inputs.warn-days }}
+          REQUIRED: ${{ inputs.required }}
+          TRIVYIGNORE: ${{ inputs.trivyignore }}
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 - <<'PY'
+          import os, sys, datetime, yaml
+
+          path = os.environ["REGISTER"]
+          warn_days = int(os.environ["WARN_DAYS"])
+          required = os.environ["REQUIRED"].lower() == "true"
+          today = datetime.date.today()
+
+          if not os.path.exists(path):
+              if required:
+                  print(f"FAIL: {path} is missing but this repo declares waivers.", file=sys.stderr)
+                  sys.exit(1)
+              print(f"no {path} -- this repo declares no accepted risks")
+              sys.exit(0)
+
+          doc = yaml.safe_load(open(path)) or {}
+          waivers = doc.get("waivers") or []
+          if not isinstance(waivers, list):
+              print(f"FAIL: {path}: 'waivers' must be a list.", file=sys.stderr)
+              sys.exit(1)
+
+          REQUIRED_FIELDS = ("id", "tool", "scope", "justification", "owner", "accepted", "expires")
+          problems, expiring = [], []
+
+          for i, w in enumerate(waivers):
+              label = w.get("id", f"entry {i}") if isinstance(w, dict) else f"entry {i}"
+              if not isinstance(w, dict):
+                  problems.append(f"{label}: not a mapping")
+                  continue
+              # Every field is mandatory. A waiver missing an owner or a
+              # justification is not a decision anyone can audit later.
+              for f in REQUIRED_FIELDS:
+                  if not w.get(f):
+                      problems.append(f"{label}: missing required field '{f}'")
+              exp = w.get("expires")
+              if exp is None:
+                  continue
+              if isinstance(exp, str):
+                  try:
+                      exp = datetime.date.fromisoformat(exp)
+                  except ValueError:
+                      problems.append(f"{label}: expires '{exp}' is not YYYY-MM-DD")
+                      continue
+              if not isinstance(exp, datetime.date):
+                  problems.append(f"{label}: expires is not a date")
+                  continue
+              left = (exp - today).days
+              if left < 0:
+                  problems.append(
+                      f"{label}: EXPIRED {abs(left)} day(s) ago ({exp}). "
+                      f"Renew with a fresh justification, or delete it if the finding is fixed."
+                  )
+              elif left <= warn_days:
+                  expiring.append(f"{label}: expires in {left} day(s) ({exp})")
+
+          print(f"{len(waivers)} waiver(s) in {path}")
+          for w in waivers:
+              if isinstance(w, dict):
+                  print(f"  {w.get('id','?'):22} {w.get('tool','?'):8} expires {w.get('expires','?')}  owner={w.get('owner','?')}")
+
+          for e in expiring:
+              print(f"::warning::waiver {e}")
+
+          if problems:
+              print("", file=sys.stderr)
+              for p in problems:
+                  print(f"  {p}", file=sys.stderr)
+              print("", file=sys.stderr)
+              print("A waiver register is a timer, not a parking space: an accepted", file=sys.stderr)
+              print("risk with no live expiry is accepted forever by default.", file=sys.stderr)
+              sys.exit(1)
+
+          # Cross-check .trivyignore against the register. Without this the
+          # register is advisory: a CVE could be silenced by adding one line to
+          # .trivyignore, with no owner, justification or expiry recorded, and
+          # nothing would notice. The register only governs if the enforcement
+          # file cannot diverge from it.
+          ti = os.environ.get("TRIVYIGNORE", "")
+          if ti:
+              if not os.path.exists(ti):
+                  print(f"FAIL: trivyignore '{ti}' does not exist.", file=sys.stderr)
+                  sys.exit(1)
+              suppressed = set()
+              for line in open(ti):
+                  line = line.split("#", 1)[0].strip()
+                  if line:
+                      suppressed.add(line)
+              registered = {str(w.get("id")) for w in waivers if isinstance(w, dict)}
+              undocumented = sorted(suppressed - registered)
+              if undocumented:
+                  print("", file=sys.stderr)
+                  print(f"FAIL: {len(undocumented)} CVE(s) suppressed in {ti} with no register entry:", file=sys.stderr)
+                  for c in undocumented:
+                      print(f"  {c}", file=sys.stderr)
+                  print("", file=sys.stderr)
+                  print("Suppressing a finding is accepting a risk. Record it in", file=sys.stderr)
+                  print(f"{path} with an owner, a justification and an expiry.", file=sys.stderr)
+                  sys.exit(1)
+              stale = sorted(registered - suppressed)
+              for c in stale:
+                  print(f"::warning::{c} is in the register but not in {ti} -- if the finding is fixed, drop the waiver")
+              print(f"{ti}: {len(suppressed)} suppression(s), all documented")
+
+          print("all waivers valid and unexpired")
+          PY
