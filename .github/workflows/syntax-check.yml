@@ -1,0 +1,112 @@
+name: syntax-check
+
+# Extracted 2026-08-13. The same three loops -- py_compile over scripts,
+# `node --check` over JS sources, and plist validation -- were copy-pasted
+# across six workflow files in automation, mcp-system-diag and
+# mcp-spotlight-facts, in both ci.yml and deploy.yml. They had already drifted:
+# each repo's copy differed slightly in globs and step names.
+#
+# Runs on ubuntu-latest, not the self-hosted Mac. That is possible because the
+# plist check uses Python's plistlib rather than macOS-only `plutil`, which was
+# the only thing pinning this work to the Mac.
+#
+# plistlib is also the STRICTER checker, which is worth knowing before treating
+# this as a like-for-like swap: on 2026-08-13 it rejected two plists that
+# `plutil -lint` had passed, because both contained "--" inside an XML comment
+# (XML forbids that). Every other plist in the org passed both. So this change
+# tightens the check as well as relocating it -- see automation#46.
+#
+# EVERY CHECK IS OPT-IN AND FAILS IF ASKED FOR BUT UNSATISFIABLE
+# ---------------------------------------------------------------
+# Each glob input defaults to "" (skip). A caller that asks for a check whose
+# glob matches nothing gets a failure, not a silent pass: "I configured a check
+# and it quietly matched zero files" is the failure mode that makes a green tick
+# meaningless, and it is exactly what a renamed directory would cause.
+
+on:
+  workflow_call:
+    inputs:
+      python-glob:
+        description: 'Shell glob of Python files to byte-compile, e.g. "scripts/*.py". Empty skips the check.'
+        type: string
+        default: ""
+        required: false
+      javascript-root:
+        description: 'Directory to search for .js files to `node --check`, e.g. ".". node_modules is always excluded. Empty skips the check.'
+        type: string
+        default: ""
+        required: false
+      plist-glob:
+        description: 'Shell glob of plists to validate, e.g. "launchd/*.plist". Empty skips the check.'
+        type: string
+        default: ""
+        required: false
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Inputs travel via env: and are never interpolated into the script.
+      # GitHub pastes ${{ }} in before bash parses it, so a caller-set glob
+      # would otherwise be script syntax rather than data.
+      - name: Byte-compile Python sources
+        if: inputs.python-glob != ''
+        env:
+          PY_GLOB: ${{ inputs.python-glob }}
+        run: |
+          shopt -s nullglob
+          files=($PY_GLOB)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "FAIL: python-glob '$PY_GLOB' matched no files." >&2
+            echo "A check that silently examines nothing is worse than no check." >&2
+            echo "Either fix the glob or drop the input." >&2
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            python3 -m py_compile "$f" && echo "  OK  $f"
+          done
+          echo "byte-compiled ${#files[@]} file(s)"
+
+      - name: Syntax-check JavaScript sources
+        if: inputs.javascript-root != ''
+        env:
+          JS_ROOT: ${{ inputs.javascript-root }}
+        run: |
+          mapfile -t files < <(find "$JS_ROOT" -name '*.js' -not -path '*/node_modules/*')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "FAIL: no .js files under '$JS_ROOT' (excluding node_modules)." >&2
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            node --check "$f" && echo "  OK  $f"
+          done
+          echo "checked ${#files[@]} file(s)"
+
+      # plistlib, not plutil: portable (so this job need not run on macOS) and
+      # stricter (it enforces well-formed XML, which plutil does not).
+      - name: Validate plists
+        if: inputs.plist-glob != ''
+        env:
+          PLIST_GLOB: ${{ inputs.plist-glob }}
+        run: |
+          shopt -s nullglob
+          files=($PLIST_GLOB)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "FAIL: plist-glob '$PLIST_GLOB' matched no files." >&2
+            exit 1
+          fi
+          fail=0
+          for f in "${files[@]}"; do
+            if python3 -c "import plistlib,sys; plistlib.load(open(sys.argv[1],'rb'))" "$f" 2>/dev/null; then
+              echo "  OK  $f"
+            else
+              echo "  BAD $f" >&2
+              python3 -c "import plistlib,sys; plistlib.load(open(sys.argv[1],'rb'))" "$f" 2>&1 | tail -2 >&2
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] && echo "validated ${#files[@]} plist(s)"
+          exit "$fail"
