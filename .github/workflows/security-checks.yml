@@ -25,23 +25,36 @@ on:
         required: false
 
 jobs:
-  secret-scan:
+  # gitleaks and semgrep were two separate jobs until 2026-08-13. Both are pure
+  # scans over the same checkout with no shared state, so splitting them bought
+  # parallelism -- which this org does not have: one self-hosted runner means
+  # they ran back to back anyway, each paying its own checkout and ~5s of runner
+  # handoff. Merging removes one full clone and one handoff per run, across
+  # every repo, and halves the per-job billing floor for whichever of these
+  # later moves to a hosted runner (jobs there bill rounded UP to a whole
+  # minute, and these average well under one).
+  #
+  # The obvious hazard in merging parallel jobs is that the first failure hides
+  # the second -- you fix gitleaks, re-run, and only then discover semgrep was
+  # also failing. Both scans therefore run with continue-on-error and a final
+  # step decides the verdict, so a single run still reports both.
+  scan:
     runs-on: [self-hosted, macOS]
     timeout-minutes: 20
     steps:
+      # fetch-depth: 0 because gitleaks scans history, not just the working
+      # tree. semgrep does not need it, but this is one checkout serving both
+      # and a full clone was already being paid for by the old secret-scan job.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
       - name: gitleaks
+        id: gitleaks
+        continue-on-error: true
         run: gitleaks detect --source . --no-banner --redact
 
-  sast:
-    runs-on: [self-hosted, macOS]
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # This job used to run `semgrep scan --config auto`. `auto` resolves the
+      # This step used to run `semgrep scan --config auto`. `auto` resolves the
       # ruleset from the registry at scan time, so the set of rules could change
       # without anything in this org changing. On 2026-08-11 it did: the ruleset
       # acquired github-actions-mutable-action-tag, and mcp-gateway and
@@ -53,6 +66,8 @@ jobs:
       # Both halves of the scan are now pinned: the engine below, and the rules
       # in the two steps after it.
       - name: Verify the semgrep engine version
+        id: engine
+        continue-on-error: true
         # Verified rather than installed. semgrep comes from Homebrew on the
         # shared runner (see README), so a `brew upgrade` can move it under us.
         # Failing loudly on drift beats silently scanning with a different
@@ -70,6 +85,8 @@ jobs:
           echo "semgrep engine ${actual} as expected"
 
       - name: Fetch and verify the pinned ruleset
+        id: ruleset
+        continue-on-error: true
         # Written to the workspace root, not a temp dir, on purpose: semgrep
         # namespaces rule ids by the path of the config file, so an absolute
         # path leaks the runner's directory layout into every rule id and makes
@@ -108,5 +125,34 @@ jobs:
           fi
           echo "ruleset ${{ inputs.semgrep-ruleset }} verified (${count} rules, canonical ${actual})"
 
+      # Skipped rather than run unpinned if either pin check failed: scanning
+      # with an unverified engine or ruleset would produce a verdict we cannot
+      # reason about, which is the whole thing the pinning exists to avoid.
       - name: semgrep
+        id: semgrep
+        if: steps.engine.outcome == 'success' && steps.ruleset.outcome == 'success'
+        continue-on-error: true
         run: semgrep scan --config .semgrep-pinned.yaml --error
+
+      # Single verdict for the whole job. Every scan above ran regardless of the
+      # others' results, so this reports all of them at once instead of making
+      # you fix one, re-run, and discover the next.
+      - name: Verdict
+        run: |
+          fail=0
+          report() {
+            case "$2" in
+              success) echo "  PASS  $1" ;;
+              skipped) echo "  SKIP  $1 (pin check failed above)"; fail=1 ;;
+              *)       echo "  FAIL  $1"; fail=1 ;;
+            esac
+          }
+          report "gitleaks (secrets)"        "${{ steps.gitleaks.outcome }}"
+          report "semgrep engine pin"        "${{ steps.engine.outcome }}"
+          report "semgrep ruleset pin"       "${{ steps.ruleset.outcome }}"
+          report "semgrep (SAST)"            "${{ steps.semgrep.outcome }}"
+          if [ "$fail" -ne 0 ]; then
+            echo "security-checks failed -- see the individual step logs above." >&2
+            exit 1
+          fi
+          echo "all security checks passed"
