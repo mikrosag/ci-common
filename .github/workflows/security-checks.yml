@@ -68,6 +68,8 @@ jobs:
       - name: Verify the semgrep engine version
         id: engine
         continue-on-error: true
+        env:
+          EXPECTED_VERSION: ${{ inputs.semgrep-version }}
         # Verified rather than installed. semgrep comes from Homebrew on the
         # shared runner (see README), so a `brew upgrade` can move it under us.
         # Failing loudly on drift beats silently scanning with a different
@@ -75,7 +77,7 @@ jobs:
         # manager on every run.
         run: |
           actual="$(semgrep --version 2>/dev/null | head -1)"
-          expected="${{ inputs.semgrep-version }}"
+          expected="$EXPECTED_VERSION"
           if [ "$actual" != "$expected" ]; then
             echo "FAIL: semgrep engine drifted -- expected ${expected}, runner has ${actual}." >&2
             echo "Either pin the runner back (brew), or bump semgrep-version in" >&2
@@ -87,6 +89,10 @@ jobs:
       - name: Fetch and verify the pinned ruleset
         id: ruleset
         continue-on-error: true
+        env:
+          RULESET: ${{ inputs.semgrep-ruleset }}
+          EXPECTED_HASH: ${{ inputs.semgrep-ruleset-hash }}
+          EXPECTED_COUNT: ${{ inputs.semgrep-rule-count }}
         # Written to the workspace root, not a temp dir, on purpose: semgrep
         # namespaces rule ids by the path of the config file, so an absolute
         # path leaks the runner's directory layout into every rule id and makes
@@ -105,14 +111,14 @@ jobs:
         # is stable against reordering while still catching a rule being added,
         # removed, or edited.
         run: |
-          curl -sSfL "https://semgrep.dev/c/${{ inputs.semgrep-ruleset }}" -o .semgrep-pinned.yaml
+          curl -sSfL "https://semgrep.dev/c/${RULESET}" -o .semgrep-pinned.yaml
           out="$(python3 -c 'import yaml, hashlib, json; rules = sorted(yaml.safe_load(open(".semgrep-pinned.yaml")).get("rules", []), key=lambda r: r.get("id", "")); print(hashlib.sha256(json.dumps(rules, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), len(rules))')"
           actual="${out%% *}"
           count="${out##* }"
-          expected="${{ inputs.semgrep-ruleset-hash }}"
-          expected_count="${{ inputs.semgrep-rule-count }}"
+          expected="$EXPECTED_HASH"
+          expected_count="$EXPECTED_COUNT"
           if [ "$actual" != "$expected" ]; then
-            echo "FAIL: the ${{ inputs.semgrep-ruleset }} ruleset changed upstream." >&2
+            echo "FAIL: the ${RULESET} ruleset changed upstream." >&2
             echo "  expected hash:  ${expected}  (${expected_count} rules)" >&2
             echo "  got hash:       ${actual}  (${count} rules)" >&2
             echo "" >&2
@@ -123,7 +129,7 @@ jobs:
             echo "same moment rather than one repo at a time by surprise." >&2
             exit 1
           fi
-          echo "ruleset ${{ inputs.semgrep-ruleset }} verified (${count} rules, canonical ${actual})"
+          echo "ruleset ${RULESET} verified (${count} rules, canonical ${actual})"
 
       # Skipped rather than run unpinned if either pin check failed: scanning
       # with an unverified engine or ruleset would produce a verdict we cannot

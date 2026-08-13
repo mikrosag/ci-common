@@ -52,14 +52,22 @@ jobs:
       # gate's verdict into something we cannot reason about. The hash comes
       # from the release's own osv-scanner_SHA256SUMS and was cross-checked
       # against it, not merely computed from whatever the download returned.
+      # Inputs come in through env: rather than ${{ }} interpolation. GitHub
+      # pastes ${{ }} into the script before bash parses it, so a caller-set
+      # value becomes script syntax -- here that would mean arbitrary commands
+      # running immediately before a security scanner is verified and executed.
+      # (semgrep: run-shell-injection.)
       - name: Install osv-scanner (pinned, checksum-verified)
+        env:
+          OSV_VERSION: ${{ inputs.osv-scanner-version }}
+          OSV_SHA256: ${{ inputs.osv-scanner-sha256 }}
         run: |
           curl -sSfL -o /tmp/osv-scanner \
-            "https://github.com/google/osv-scanner/releases/download/${{ inputs.osv-scanner-version }}/osv-scanner_linux_amd64"
+            "https://github.com/google/osv-scanner/releases/download/${OSV_VERSION}/osv-scanner_linux_amd64"
           actual="$(sha256sum /tmp/osv-scanner | awk '{print $1}')"
-          expected="${{ inputs.osv-scanner-sha256 }}"
+          expected="$OSV_SHA256"
           if [ "$actual" != "$expected" ]; then
-            echo "FAIL: osv-scanner ${{ inputs.osv-scanner-version }} checksum mismatch." >&2
+            echo "FAIL: osv-scanner ${OSV_VERSION} checksum mismatch." >&2
             echo "  expected: ${expected}" >&2
             echo "  got:      ${actual}" >&2
             echo "Refusing to run an unverified scanner binary. If the release was" >&2

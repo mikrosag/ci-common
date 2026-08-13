@@ -143,7 +143,9 @@ jobs:
         id: mcp_semgrep
         continue-on-error: true
         working-directory: server
-        run: semgrep scan --config ../ci-common/semgrep-rules/mcp-server.yml --error -- "${{ inputs.server-path }}"
+        env:
+          SERVER_PATH: ${{ inputs.server-path }}
+        run: semgrep scan --config ../ci-common/semgrep-rules/mcp-server.yml --error -- "$SERVER_PATH"
 
       # working-directory is just "server" (the checkout root), not
       # "server/${{ inputs.server-path }}": compose-file is already
@@ -157,7 +159,10 @@ jobs:
         if: inputs.compose-file != ''
         continue-on-error: true
         working-directory: server
-        run: docker compose -f "${{ inputs.compose-file }}" config > "${{ github.workspace }}/compose-resolved.yml"
+        env:
+          COMPOSE_FILE_PATH: ${{ inputs.compose-file }}
+          WORKSPACE: ${{ github.workspace }}
+        run: docker compose -f "$COMPOSE_FILE_PATH" config > "$WORKSPACE/compose-resolved.yml"
 
       - name: conftest -- compose hardening
         id: conftest_compose
@@ -168,7 +173,9 @@ jobs:
       - name: conftest -- manifest structure + egress allowlist (stage 6)
         id: conftest_manifest
         continue-on-error: true
-        run: conftest test --policy ci-common/policy --namespace main.manifest "server/${{ inputs.manifest-path }}"
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest-path }}
+        run: conftest test --policy ci-common/policy --namespace main.manifest "server/$MANIFEST_PATH"
 
       # One verdict for the whole job, reporting every check rather than
       # stopping at the first failure.
@@ -218,14 +225,22 @@ jobs:
       # monorepo callers passing e.g. dockerfile=services/agentregistry/Dockerfile
       # with server-path=services/agentregistry -- confirmed live 2026-08-10.
       - name: Build image for SBOM
-        run: docker build -f "${{ inputs.dockerfile }}" -t "local/mcp-sbom:${{ inputs.server-name }}-${{ github.sha }}" .
+        env:
+          DOCKERFILE: ${{ inputs.dockerfile }}
+          SERVER_NAME: ${{ inputs.server-name }}
+          TAG: ${{ github.sha }}
+        run: docker build -f "$DOCKERFILE" -t "local/mcp-sbom:${SERVER_NAME}-${TAG}" .
       - name: Generate SBOM (Syft, CycloneDX)
+        env:
+          SERVER_NAME: ${{ inputs.server-name }}
+          TAG: ${{ github.sha }}
         run: |
           mkdir -p sbom
-          syft "local/mcp-sbom:${{ inputs.server-name }}-${{ github.sha }}" -o cyclonedx-json > "sbom/${{ inputs.server-name }}-$(date +%Y.%m.%d).json"
+          syft "local/mcp-sbom:${SERVER_NAME}-${TAG}" -o cyclonedx-json > "sbom/${SERVER_NAME}-$(date +%Y.%m.%d).json"
       - name: Sign the SBOM (cosign, keyless)
         env:
           COSIGN_EXPERIMENTAL: "1"
+          SERVER_NAME: ${{ inputs.server-name }}
         # cosign v3 removed --output-signature/--output-certificate entirely
         # (confirmed live 2026-07-24 against the installed v3.1.1 -- both flags
         # are gone from `cosign sign-blob --help` and the command now hard-errors
@@ -244,13 +259,15 @@ jobs:
         # is outstanding here -- the stale wording had already sent one reader
         # chasing a bug that no longer exists.
         run: |
-          SBOM_FILE="sbom/${{ inputs.server-name }}-$(date +%Y.%m.%d).json"
+          SBOM_FILE="sbom/${SERVER_NAME}-$(date +%Y.%m.%d).json"
           cosign sign-blob --yes \
             --bundle "${SBOM_FILE}.bundle" \
             "$SBOM_FILE"
       - name: Verify the signature we just produced
+        env:
+          SERVER_NAME: ${{ inputs.server-name }}
         run: |
-          SBOM_FILE="sbom/${{ inputs.server-name }}-$(date +%Y.%m.%d).json"
+          SBOM_FILE="sbom/${SERVER_NAME}-$(date +%Y.%m.%d).json"
           cosign verify-blob \
             --bundle "${SBOM_FILE}.bundle" \
             --certificate-identity-regexp ".*" \
