@@ -18,6 +18,11 @@ on:
         type: boolean
         default: false
         required: false
+      max-db-age-hours:
+        description: "Refuse to scan if the cached Trivy vulnerability DB is older than this. 48h tolerates one missed run of automation's daily trivy-db-refresh job; two missed runs is a real problem and should fail."
+        type: string
+        default: "48"
+        required: false
 
 jobs:
   trivy:
@@ -27,6 +32,58 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build image for scanning
         run: docker build -f "${{ inputs.dockerfile }}" -t local/trivy-scan:${{ github.sha }} .
+
+      # Trivy refreshes its vulnerability DB mid-scan once the cached copy passes
+      # its 24h TTL. On 2026-08-13 that refresh hit a 404 from
+      # mirror.gcr.io/aquasec/trivy-db:2 and took the entire MCP gate down on
+      # mcp-system-diag -- nothing wrong with the image, but every merge in every
+      # MCP repo blocked by an outage nobody here could see, and a failure that
+      # reads exactly like a real CRITICAL/HIGH finding unless you open the log.
+      #
+      # The scan step below therefore uses --skip-db-update and never touches the
+      # mirror. automation's com.openclaw.trivy-db-refresh job keeps the cache
+      # warm daily, out-of-band, where a mirror outage costs nothing and retries
+      # tomorrow.
+      #
+      # That trade needs a guard, or a silently-stalled refresh job would leave
+      # scans quietly passing against week-old vulnerability data -- a false
+      # negative in the one control meant to catch this, which is strictly worse
+      # than the flaky failure it replaces. Hence: refuse to scan on a stale
+      # cache, and say exactly why.
+      #
+      # Age is measured from the DB's UpdatedAt (when the data was built
+      # upstream), not DownloadedAt -- re-downloading an old DB does not make it
+      # fresher.
+      #
+      # Note this couples container-scan to the self-hosted runner, which owns
+      # the warm cache. Moving this job to a hosted runner means restoring the
+      # download (and its flakiness) or caching the DB as an artifact.
+      - name: Verify the cached vulnerability DB is fresh
+        run: |
+          meta="$HOME/Library/Caches/trivy/db/metadata.json"
+          if [ ! -f "$meta" ]; then
+            echo "FAIL: no Trivy DB cache at $meta." >&2
+            echo "Run automation/scripts/trivy_db_refresh.py on the runner, or" >&2
+            echo "check that com.openclaw.trivy-db-refresh is loaded." >&2
+            exit 1
+          fi
+          # One line on purpose: a multi-line python -c inside a YAML block
+          # scalar puts source at column 0, which silently terminates the block
+          # and makes the whole workflow unparseable. Trivy writes NANOsecond
+          # timestamps and datetime accepts at most 6 fractional digits, hence
+          # the truncation.
+          age="$(python3 -c 'import json,sys;from datetime import datetime,timezone;s=json.load(open(sys.argv[1]))["UpdatedAt"].strip().replace("Z","+00:00");h,_,t=s.partition(".");f,g,o=(t.partition("+") if "+" in t else t.partition("-"));s=(h+"."+f[:6]+g+o) if _ else s;print(f"{(datetime.now(timezone.utc)-datetime.fromisoformat(s)).total_seconds()/3600:.1f}")' "$meta")"
+          limit="${{ inputs.max-db-age-hours }}"
+          echo "Trivy DB is ${age}h old (limit ${limit}h)"
+          if [ "$(echo "$age > $limit" | bc -l)" -eq 1 ]; then
+            echo "FAIL: Trivy vulnerability DB is ${age}h old, over the ${limit}h limit." >&2
+            echo "Scanning against data this stale would report clean for anything" >&2
+            echo "disclosed since, so this refuses rather than passing quietly." >&2
+            echo "The daily com.openclaw.trivy-db-refresh job has not succeeded --" >&2
+            echo "check /Users/frans/.openclaw/logs/trivy_db_refresh.err.log." >&2
+            exit 1
+          fi
+
       - name: Trivy scan
         continue-on-error: ${{ inputs.waive }}
-        run: trivy image --exit-code 1 --severity "${{ inputs.severity }}" local/trivy-scan:${{ github.sha }}
+        run: trivy image --skip-db-update --exit-code 1 --severity "${{ inputs.severity }}" local/trivy-scan:${{ github.sha }}
