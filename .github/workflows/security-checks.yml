@@ -39,8 +39,22 @@ jobs:
   # also failing. Both scans therefore run with continue-on-error and a final
   # step decides the verdict, so a single run still reports both.
   scan:
-    runs-on: [self-hosted, macOS]
+    # Moved off the self-hosted Mac 2026-08-13. gitleaks and semgrep are both
+    # brew installs there and absent from ubuntu-latest, so each is installed
+    # pinned and checksum-verified below -- the same recipe already proven by
+    # ci-common's own ci.yml.
+    #
+    # This is the highest-volume job in the org: it runs on every PR in every
+    # repo, so it was also the single biggest consumer of the one runner.
+    #
+    # Pinning semgrep via pip additionally makes the engine check below true by
+    # construction rather than dependent on whatever brew last installed --
+    # which was the drift this check existed to catch.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
     steps:
       # fetch-depth: 0 because gitleaks scans history, not just the working
       # tree. semgrep does not need it, but this is one checkout serving both
@@ -49,10 +63,28 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install pinned tools
+        env:
+          SEMGREP_VERSION: ${{ inputs.semgrep-version }}
+        run: |
+          curl -sSfL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          actual="$(sha256sum /tmp/gitleaks.tar.gz | awk '{print $1}')"
+          if [ "$actual" != "$GITLEAKS_SHA256" ]; then
+            echo "FAIL: gitleaks ${GITLEAKS_VERSION} checksum mismatch." >&2
+            echo "  expected: $GITLEAKS_SHA256" >&2
+            echo "  got:      $actual" >&2
+            echo "Refusing to run an unverified secret scanner." >&2
+            exit 1
+          fi
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          chmod +x /tmp/gitleaks
+          python3 -m pip install --quiet "semgrep==${SEMGREP_VERSION}" pyyaml
+
       - name: gitleaks
         id: gitleaks
         continue-on-error: true
-        run: gitleaks detect --source . --no-banner --redact
+        run: /tmp/gitleaks detect --source . --no-banner --redact
 
       # This step used to run `semgrep scan --config auto`. `auto` resolves the
       # ruleset from the registry at scan time, so the set of rules could change
