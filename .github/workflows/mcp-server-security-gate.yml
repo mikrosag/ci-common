@@ -8,7 +8,7 @@ name: mcp-server-security-gate
 # Implements all 6 stages from the design:
 #   1. secret-scan        -- security-checks.yml, `scan` job (gitleaks step)
 #   2. sast               -- security-checks.yml, same `scan` job (semgrep step,
-#                             standard pinned rules) + the mcp-semgrep-rules job
+#                             standard pinned rules) + the rules-and-policy job
 #                             below (this repo's MCP-specific rules).
 #                             Stages 1 and 2 shared one workflow but ran as two
 #                             jobs until 2026-08-13; they are now one job with a
@@ -16,9 +16,9 @@ name: mcp-server-security-gate
 #                             split bought parallelism that never existed.
 #   3. dep/container scan -- sca-scan.yml (osv-scanner) + container-scan.yml (trivy)
 #   4. sbom + signing     -- sbom-sign job (syft + cosign sign-blob, keyless)
-#   5. policy check       -- policy-check job (conftest against this repo's Rego
+#   5. policy check       -- rules-and-policy job (conftest against this repo's Rego
 #                             bundle: compose hardening + manifest structure)
-#   6. egress allowlist   -- folded into policy-check's manifest namespace (a
+#   6. egress allowlist   -- folded into that job's manifest namespace (a
 #                             manifest missing network.egress, or declaring "*",
 #                             is a deny there -- see policy/mcp-server-manifest.rego)
 #
@@ -64,7 +64,7 @@ on:
         required: false
     secrets:
       CI_COMMON_READ_APP_ID:
-        description: "App ID of the mcp-gateway-ci-common-reader GitHub App (Contents: Read-only, installed only on ci-common). The default GITHUB_TOKEN in a caller's workflow run can't check out a different private repo's contents, which mcp-semgrep-rules and policy-check both need (they read ci-common's own policy/ and semgrep-rules/ files) -- a short-lived App installation token stands in for that. Declared in an explicit secrets block rather than relying on `secrets: inherit`. Note these must be set as REPO-level secrets on each calling repo -- org-level secrets resolve empty on this org's Free plan (see README)."
+        description: "App ID of the mcp-gateway-ci-common-reader GitHub App (Contents: Read-only, installed only on ci-common). The default GITHUB_TOKEN in a caller's workflow run can't check out a different private repo's contents, which the rules-and-policy job needs (it reads ci-common's own policy/ and semgrep-rules/ files) -- a short-lived App installation token stands in for that. Declared in an explicit secrets block rather than relying on `secrets: inherit`. Note these must be set as REPO-level secrets on each calling repo -- org-level secrets resolve empty on this org's Free plan (see README)."
         required: true
       CI_COMMON_READ_APP_PRIVATE_KEY:
         description: "Private key (PEM) for the mcp-gateway-ci-common-reader GitHub App."
@@ -88,7 +88,18 @@ jobs:
       severity: ${{ inputs.severity }}
       waive: ${{ inputs.waive-container-scan }}
 
-  mcp-semgrep-rules:
+  # mcp-semgrep-rules and policy-check were separate jobs until 2026-08-13.
+  # Both performed exactly the same three setup steps -- checkout the caller,
+  # mint a ci-common-scoped App installation token, checkout ci-common -- and
+  # then ran a single tool each. That was 4 checkouts and 2 token mints per gate
+  # run to do the work of 2 and 1, and with one self-hosted runner the two jobs
+  # never overlapped anyway, so the split bought nothing.
+  #
+  # Every check runs with continue-on-error and a Verdict step decides the
+  # outcome, so merging does not let the first failure hide the rest: a run
+  # still reports the MCP semgrep rules, the compose policy and the manifest
+  # policy independently.
+  rules-and-policy:
     runs-on: [self-hosted, macOS]
     timeout-minutes: 20
     steps:
@@ -120,6 +131,7 @@ jobs:
           ref: main
           token: ${{ steps.ci-common-read-token.outputs.token }}
           path: ci-common
+
       # Scoped to server-path, not the whole checkout: for a dedicated
       # single-server repo (server-path defaults to ".") this scans the same
       # thing either way, but for a multi-service monorepo caller (e.g.
@@ -128,8 +140,71 @@ jobs:
       # agentregistry onboarding flagged 2 findings in services/greenbone/
       # -- entirely unrelated code the gate had no business scanning.
       - name: MCP-specific semgrep rules
+        id: mcp_semgrep
+        continue-on-error: true
         working-directory: server
         run: semgrep scan --config ../ci-common/semgrep-rules/mcp-server.yml --error -- "${{ inputs.server-path }}"
+
+      # working-directory is just "server" (the checkout root), not
+      # "server/${{ inputs.server-path }}": compose-file is already
+      # root-relative (per its own input description above). The extra
+      # server-path suffix used to double the path for monorepo callers --
+      # confirmed live 2026-08-10 (homelab's agentregistry onboarding failed
+      # with "server/services/agentregistry/services/agentregistry/docker-compose.yml:
+      # no such file or directory").
+      - name: Resolve compose config (if this server has one)
+        id: compose_resolve
+        if: inputs.compose-file != ''
+        continue-on-error: true
+        working-directory: server
+        run: docker compose -f "${{ inputs.compose-file }}" config > "${{ github.workspace }}/compose-resolved.yml"
+
+      - name: conftest -- compose hardening
+        id: conftest_compose
+        if: inputs.compose-file != ''
+        continue-on-error: true
+        run: conftest test --policy ci-common/policy --namespace main.compose compose-resolved.yml
+
+      - name: conftest -- manifest structure + egress allowlist (stage 6)
+        id: conftest_manifest
+        continue-on-error: true
+        run: conftest test --policy ci-common/policy --namespace main.manifest "server/${{ inputs.manifest-path }}"
+
+      # One verdict for the whole job, reporting every check rather than
+      # stopping at the first failure.
+      #
+      # The two compose steps are legitimately skipped when a server has no
+      # compose file (compose-file: "" -- e.g. a bare-metal stdio server), so
+      # for those "skipped" means not-applicable, not failure. For the semgrep
+      # and manifest checks a skip would mean something went wrong upstream and
+      # is treated as a failure: this is a fail-closed admission gate, and
+      # silently passing an unexecuted check is the one outcome it must not
+      # produce.
+      - name: Verdict
+        run: |
+          fail=0
+          required() {
+            case "$2" in
+              success) echo "  PASS  $1" ;;
+              *)       echo "  FAIL  $1 (outcome: $2)"; fail=1 ;;
+            esac
+          }
+          optional() {
+            case "$2" in
+              success) echo "  PASS  $1" ;;
+              skipped) echo "  N/A   $1 (no compose file for this server)" ;;
+              *)       echo "  FAIL  $1 (outcome: $2)"; fail=1 ;;
+            esac
+          }
+          required "MCP semgrep rules"        "${{ steps.mcp_semgrep.outcome }}"
+          optional "compose config resolves"  "${{ steps.compose_resolve.outcome }}"
+          optional "conftest compose policy"  "${{ steps.conftest_compose.outcome }}"
+          required "conftest manifest policy" "${{ steps.conftest_manifest.outcome }}"
+          if [ "$fail" -ne 0 ]; then
+            echo "rules-and-policy failed -- see the individual step logs above." >&2
+            exit 1
+          fi
+          echo "all rules and policy checks passed"
 
   sbom-sign:
     runs-on: [self-hosted, macOS]
@@ -190,45 +265,6 @@ jobs:
           # behalf, since which repo/path is caller-specific.
           path: sbom/
 
-  policy-check:
-    runs-on: [self-hosted, macOS]
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: server
-      # See the identical checkout in mcp-semgrep-rules above for why this
-      # needs an explicit token.
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        id: ci-common-read-token
-        with:
-          app-id: ${{ secrets.CI_COMMON_READ_APP_ID }}
-          private-key: ${{ secrets.CI_COMMON_READ_APP_PRIVATE_KEY }}
-          owner: mikrosag
-          repositories: ci-common
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: mikrosag/ci-common
-          ref: main
-          token: ${{ steps.ci-common-read-token.outputs.token }}
-          path: ci-common
-      # working-directory is just "server" (the checkout root), not
-      # "server/${{ inputs.server-path }}": compose-file is already
-      # root-relative (per its own input description above). The extra
-      # server-path suffix used to double the path for monorepo callers --
-      # confirmed live 2026-08-10 (homelab's agentregistry onboarding failed
-      # with "server/services/agentregistry/services/agentregistry/docker-compose.yml:
-      # no such file or directory").
-      - name: Resolve compose config (if this server has one)
-        if: inputs.compose-file != ''
-        working-directory: server
-        run: docker compose -f "${{ inputs.compose-file }}" config > "${{ github.workspace }}/compose-resolved.yml"
-      - name: conftest -- compose hardening
-        if: inputs.compose-file != ''
-        run: conftest test --policy ci-common/policy --namespace main.compose compose-resolved.yml
-      - name: conftest -- manifest structure + egress allowlist (stage 6)
-        run: conftest test --policy ci-common/policy --namespace main.manifest "server/${{ inputs.manifest-path }}"
-
   gate-summary:
     runs-on: [self-hosted, macOS]
     timeout-minutes: 20
@@ -237,9 +273,8 @@ jobs:
         secret-scan-and-sast,
         sca-scan,
         container-scan,
-        mcp-semgrep-rules,
+        rules-and-policy,
         sbom-sign,
-        policy-check,
       ]
     if: always()
     steps:
