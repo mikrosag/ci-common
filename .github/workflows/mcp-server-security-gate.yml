@@ -6,9 +6,14 @@ name: mcp-server-security-gate
 # doc section 7 and homelab/mcp-gateway/registry/README.md for the full flow.
 #
 # Implements all 6 stages from the design:
-#   1. secret-scan       -- security-checks.yml (gitleaks)
-#   2. sast               -- security-checks.yml (semgrep, standard rules) +
-#                             mcp-semgrep-rules job (this repo's MCP-specific rules)
+#   1. secret-scan        -- security-checks.yml, `scan` job (gitleaks step)
+#   2. sast               -- security-checks.yml, same `scan` job (semgrep step,
+#                             standard pinned rules) + the mcp-semgrep-rules job
+#                             below (this repo's MCP-specific rules).
+#                             Stages 1 and 2 shared one workflow but ran as two
+#                             jobs until 2026-08-13; they are now one job with a
+#                             step each, since there is only one runner and the
+#                             split bought parallelism that never existed.
 #   3. dep/container scan -- sca-scan.yml (osv-scanner) + container-scan.yml (trivy)
 #   4. sbom + signing     -- sbom-sign job (syft + cosign sign-blob, keyless)
 #   5. policy check       -- policy-check job (conftest against this repo's Rego
