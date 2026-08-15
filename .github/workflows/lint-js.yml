@@ -24,8 +24,10 @@ jobs:
       # becomes script syntax; an env var stays data. (semgrep:
       # run-shell-injection.)
       #
-      # Unquoted on purpose: this input IS a command line and must word-split
-      # into a command plus arguments.
+      # Handed to an explicit interpreter rather than word-split -- see
+      # dynamic-tests-nix.yml for the failure this avoids: unquoted expansion
+      # does not re-interpret quotes, so any caller whose command contains
+      # quoting would break.
       - env:
           LINT_COMMAND: ${{ inputs.lint-command }}
-        run: $LINT_COMMAND
+        run: bash -c "$LINT_COMMAND"
