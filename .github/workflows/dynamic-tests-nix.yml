@@ -23,10 +23,25 @@ jobs:
       # execute both halves; an env var is data the shell never re-parses as
       # syntax. (semgrep: run-shell-injection.)
       #
-      # $TEST_COMMAND is deliberately UNQUOTED -- this input is a command line
-      # and must word-split into arguments. Quoting it would pass the whole
-      # string as a single argv entry and break every caller.
+      # Handed to an explicit `bash -c`, NOT word-split.
+      #
+      # This was `nix develop -c $TEST_COMMAND` (unquoted) between 2026-08-13's
+      # injection fix and this change, and it was wrong: unquoted expansion
+      # splits on whitespace but does NOT re-interpret quotes, so a caller
+      # passing `bash -c 'PYTHONPATH=. pytest tests/'` had the literal token
+      # `'PYTHONPATH=.` handed to bash and the job died with exit 2. It worked
+      # before only because ${{ }} pasted the text in and bash then parsed the
+      # quotes as syntax -- which is exactly the property the injection fix
+      # removed. agent-bridge broke on this; it went unnoticed because that repo
+      # had not run CI in between.
+      #
+      # `bash -c "$TEST_COMMAND"` is still not injection: the value reaches an
+      # interpreter as a single argument rather than being spliced into this
+      # script, and "run this command line" is the documented contract of the
+      # input. What the injection fix prevents is a value escaping into the
+      # surrounding script; it was never meant to stop a command input being a
+      # command.
       - name: Run tests in Nix devShell
         env:
           TEST_COMMAND: ${{ inputs.test-command }}
-        run: nix develop -c $TEST_COMMAND
+        run: nix develop -c bash -c "$TEST_COMMAND"
