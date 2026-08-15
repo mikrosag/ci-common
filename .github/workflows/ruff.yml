@@ -1,0 +1,57 @@
+name: ruff
+
+# Extracted 2026-08-13. `ruff check` was its own self-hosted job in three repos
+# (automation, agent-bridge, mcp-iterm-history), each a near-identical four
+# lines differing only in the paths passed.
+#
+# Runs on ubuntu-latest with ruff pinned via pip. On the Mac it came from
+# Homebrew, unpinned -- so a `brew upgrade` could change lint results across
+# three repos at once, with no commit to point at. Pinning here makes a ruff
+# version bump a deliberate one-line PR in this file, the same treatment given
+# to the semgrep engine and ruleset.
+#
+# 0.15.20 matches what the Mac runner has, so adopting this changes where the
+# lint runs without changing what it reports.
+
+on:
+  workflow_call:
+    inputs:
+      paths:
+        description: 'Paths to lint, space-separated, e.g. "scripts/ tests/". Passed to `ruff check` as separate arguments.'
+        type: string
+        default: "."
+        required: false
+      ruff-version:
+        description: "Exact ruff version to install. Bumping this changes lint results in every calling repo at once -- do it deliberately."
+        type: string
+        default: "0.15.20"
+        required: false
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pinned ruff
+        env:
+          RUFF_VERSION: ${{ inputs.ruff-version }}
+        run: |
+          python3 -m pip install --quiet "ruff==${RUFF_VERSION}"
+          installed="$(ruff --version | awk '{print $2}')"
+          if [ "$installed" != "$RUFF_VERSION" ]; then
+            echo "FAIL: asked for ruff ${RUFF_VERSION}, got ${installed}." >&2
+            exit 1
+          fi
+          echo "ruff ${installed}"
+
+      # $PATHS is deliberately UNQUOTED: the input is a space-separated list of
+      # paths and must word-split into separate arguments. Quoting it would pass
+      # "scripts/ tests/" as one path and ruff would fail on a directory that
+      # does not exist. The value travels via env: rather than ${{ }} so it is
+      # never pasted into the script as syntax.
+      - name: Ruff lint
+        env:
+          PATHS: ${{ inputs.paths }}
+        run: ruff check -- $PATHS

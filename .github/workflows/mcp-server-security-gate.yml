@@ -283,7 +283,9 @@ jobs:
           path: sbom/
 
   gate-summary:
-    runs-on: [self-hosted, macOS]
+    # Pure aggregation of needs.*.result -- runs no tools, touches no files, so
+    # there was never a reason for it to occupy the Mac.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     needs:
       [
