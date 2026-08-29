@@ -39,6 +39,20 @@ on:
         type: string
         default: "Dockerfile"
         required: false
+      context:
+        description: >-
+          Docker build context, relative to the calling repo's root. Defaults to
+          "." -- correct for a server whose Dockerfile sits at its repo root,
+          which was every caller until homelab onboarded a service from
+          services/<name>/. A monorepo must pass that subdirectory here, or every
+          COPY resolves against the wrong tree and the build dies with "failed to
+          compute cache key: <path>: not found" -- which reads like a scan
+          failure rather than a context bug. Deliberately NOT defaulted to
+          server-path: that would silently change the context for existing
+          callers which set server-path but depend on a root context.
+        type: string
+        default: "."
+        required: false
       compose-file:
         description: "docker-compose.yml path, relative to the calling repo's root. Empty string skips the compose policy check (e.g. a stdio-only server with no compose file yet)."
         type: string
@@ -85,6 +99,7 @@ jobs:
     uses: mikrosag/ci-common/.github/workflows/container-scan.yml@v1
     with:
       dockerfile: ${{ inputs.dockerfile }}
+      context: ${{ inputs.context }}
       severity: ${{ inputs.severity }}
       waive: ${{ inputs.waive-container-scan }}
 
@@ -227,9 +242,14 @@ jobs:
       - name: Build image for SBOM
         env:
           DOCKERFILE: ${{ inputs.dockerfile }}
+          CONTEXT: ${{ inputs.context }}
           SERVER_NAME: ${{ inputs.server-name }}
           TAG: ${{ github.sha }}
-        run: docker build -f "$DOCKERFILE" -t "local/mcp-sbom:${SERVER_NAME}-${TAG}" .
+        # Same context as container-scan -- this job rebuilds the very image the
+        # SBOM describes, so a divergence would sign an artifact that is not what
+        # was scanned. It had the same hardcoded "." and was only ever masked by
+        # `needs: [container-scan]` failing first.
+        run: docker build -f "$DOCKERFILE" -t "local/mcp-sbom:${SERVER_NAME}-${TAG}" "$CONTEXT"
       - name: Generate SBOM (Syft, CycloneDX)
         env:
           SERVER_NAME: ${{ inputs.server-name }}

@@ -8,6 +8,18 @@ on:
         type: string
         default: "Dockerfile"
         required: false
+      context:
+        description: >-
+          Docker build context, relative to the calling repo's root. Defaults to
+          "." because every caller until now kept its Dockerfile at the repo root
+          with COPY paths relative to it. A monorepo whose Dockerfile lives in a
+          subdirectory (e.g. homelab's services/<name>/) must pass that directory
+          here, or every COPY resolves against the wrong tree and the build fails
+          with "failed to compute cache key: <path>: not found" -- which reads
+          like a scan failure, not a context bug.
+        type: string
+        default: "."
+        required: false
       severity:
         description: "Trivy severity threshold that fails the build"
         type: string
@@ -37,8 +49,9 @@ jobs:
       - name: Build image for scanning
         env:
           DOCKERFILE: ${{ inputs.dockerfile }}
+          CONTEXT: ${{ inputs.context }}
           TAG: ${{ github.sha }}
-        run: docker build -f "$DOCKERFILE" -t "local/trivy-scan:$TAG" .
+        run: docker build -f "$DOCKERFILE" -t "local/trivy-scan:$TAG" "$CONTEXT"
 
       # Trivy refreshes its vulnerability DB mid-scan once the cached copy passes
       # its 24h TTL. On 2026-08-13 that refresh hit a 404 from
