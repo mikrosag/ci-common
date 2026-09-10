@@ -1,0 +1,43 @@
+name: linear-card
+
+# Enforces "every PR closes a Linear card" (MISSION.md §9).
+#
+# WHY THIS IS ITS OWN FILE AND NOT A JOB IN ci.yml
+# ------------------------------------------------
+# It needs the `edited` trigger. ci.yml runs on the default pull_request types
+# (opened, synchronize, reopened), none of which fire when someone edits the PR
+# body -- so a PR that failed this check and then had "Fixes MIK-123" added
+# would stay red until an unrelated push happened to re-run it. That is a
+# miserable loop to be stuck in and it teaches people to ignore the check.
+#
+# Adding `edited` to ci.yml instead would re-run gitleaks, semgrep, osv-scanner
+# and the build on every typo fix in a description, on one shared self-hosted
+# runner. Splitting the trigger costs one small hosted job and keeps the
+# expensive suite on code changes, where it belongs.
+#
+# `labeled`/`unlabeled` are here so applying the `no-card` exemption label takes
+# effect immediately rather than needing another push.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linear-card:
+    uses: mikrosag/ci-common/.github/workflows/linear-card-check.yml@v1
+    # verify-card-exists is off until LINEAR_API_KEY is set at REPO scope in
+    # each repo (org scope silently resolves to an empty string here -- Free
+    # plan, private repos). Without it a typo'd card number passes the regex,
+    # merges, and transitions nothing.
+    # with:
+    #   verify-card-exists: true
+    # secrets:
+    #   linear-api-key: ${{ secrets.LINEAR_API_KEY }}
