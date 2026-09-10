@@ -32,7 +32,20 @@ permissions:
 
 jobs:
   linear-card:
-    uses: mikrosag/ci-common/.github/workflows/linear-card-check.yml@v1
+    # LOCAL PATH, NOT @v1 -- and this repo is the one place that is correct.
+    #
+    # Consumer repos pin `mikrosag/ci-common/....yml@v1`. This repo cannot: a PR
+    # that ADDS or CHANGES linear-card-check.yml would be gated by the @v1 tag it
+    # is trying to change, so the check would test the old copy and a broken new
+    # one would sail through. That is the same chicken-and-egg ci.yml's header
+    # describes, and it is why ci.yml inlines its checks against the branch under
+    # test rather than calling its own reusable workflows.
+    #
+    # `./` resolves against the PR head, so this repo self-checks with the copy
+    # the PR actually proposes. Verified the hard way on PR #33: pointing this at
+    # @v1 before the tag moved failed at dispatch with "workflow file issue" --
+    # not as a normal red check, so `gh pr checks` did not even list it.
+    uses: ./.github/workflows/linear-card-check.yml
     # verify-card-exists is off until LINEAR_API_KEY is set at REPO scope in
     # each repo (org scope silently resolves to an empty string here -- Free
     # plan, private repos). Without it a typo'd card number passes the regex,
