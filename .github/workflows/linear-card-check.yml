@@ -1,0 +1,231 @@
+name: linear-card-check
+
+# Fails a PR whose body does not reference a Linear card with a magic word,
+# e.g. "Fixes MIK-123".
+#
+# WHY THIS EXISTS
+# ---------------
+# MISSION.md tells the 18 service agents "every PR needs a card -- no
+# exceptions", and nothing enforced it. On the night of 2026-09-05, of twelve
+# PRs the fleet opened, only three carried a Fixes line. The other nine landed
+# real work that the board could not see: Linear had no card to transition, and
+# the same MISSION.md forbids moving status by hand, so those cards would have
+# sat in Todo straight through merge.
+#
+# That failure is invisible by construction. A PR with no Fixes line is a
+# perfectly green PR -- every existing check passes, it merges, it deploys, and
+# the only symptom is a board that quietly under-reports what the fleet did.
+# Nobody gets told. This workflow converts that silence into a red check.
+#
+# WHY THE BODY AND NOT THE BRANCH NAME
+# ------------------------------------
+# Linear also auto-links a PR via its branch name (frans/mik-123-slug). That
+# link is real but it is NOT what moves the card -- the state transition on
+# merge comes from a magic word in the PR body. Accepting a branch-name link
+# here would pass PRs that still cannot transition, which is precisely the
+# failure being fixed. Body only, deliberately.
+#
+# WHY THE PR BODY NEVER REACHES A SHELL
+# -------------------------------------
+# The body is attacker-controlled text on a public repo. It is passed through
+# `env:` and read from os.environ inside Python -- never interpolated into a
+# run: block, which would be the same run-shell-injection class that a 2026-08-13
+# scan found seventeen of in this repo. Do not "simplify" this into a grep.
+
+on:
+  workflow_call:
+    inputs:
+      team-key:
+        description: "Linear team key that card references must use. MIK is the only team in this workspace; an issue from another team is almost certainly a typo."
+        type: string
+        default: "MIK"
+        required: false
+      exempt-labels:
+        description: "Comma-separated PR labels that waive the requirement. The escape hatch is deliberately a LABEL and not a magic string in the body -- applying it is a visible, attributable act that shows on the PR, rather than something a generated body can grant itself."
+        type: string
+        default: "no-card"
+        required: false
+      exempt-actors:
+        description: "Comma-separated PR authors that waive the requirement. Bots that open PRs on their own schedule cannot be expected to file a card first."
+        type: string
+        default: "dependabot[bot],github-actions[bot]"
+        required: false
+      exempt-forks:
+        description: "Waive the requirement for PRs opened from a fork. ci-common is going public, and an outside contributor has no access to this Linear workspace -- enforcing a MIK card on them would make the repo uncontributable. Fleet agents always push branches to the repo itself, so this exempts strangers without exempting any agent."
+        type: boolean
+        default: true
+        required: false
+      verify-card-exists:
+        description: "Also ask Linear whether the referenced issue is real. Requires the linear-api-key secret. Off by default so the check works with no secret at all -- but see the note in the verify step: regex-only accepts a typo'd card number, which fails exactly as silently as the problem this workflow exists to catch."
+        type: boolean
+        default: false
+        required: false
+    secrets:
+      linear-api-key:
+        description: "Linear personal API key, used only to confirm the referenced issue exists. Read-only usage. Org-scoped secrets do not work in this org (Free plan + private repos resolve them to an empty string with no error), so set this at repo scope."
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  linear-card-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # No checkout. This job reads the event payload and nothing from the
+      # repository, so cloning would only widen what a hostile PR's code can
+      # reach in this job.
+      - name: Require a Linear card reference in the PR body
+        id: parse
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          EXEMPT_FORKS: ${{ inputs.exempt-forks }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          TEAM_KEY: ${{ inputs.team-key }}
+          EXEMPT_LABELS: ${{ inputs.exempt-labels }}
+          EXEMPT_ACTORS: ${{ inputs.exempt-actors }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys
+
+          body = os.environ.get("PR_BODY") or ""
+          author = os.environ.get("PR_AUTHOR", "")
+          team = os.environ.get("TEAM_KEY", "MIK").strip().upper()
+
+          def csv(name):
+              return {v.strip() for v in os.environ.get(name, "").split(",") if v.strip()}
+
+          labels = set(json.loads(os.environ.get("PR_LABELS") or "[]"))
+
+          def out(key, value):
+              with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+                  fh.write(f"{key}={value}\n")
+
+          if os.environ.get("EXEMPT_FORKS", "").lower() == "true" and \
+                  os.environ.get("PR_IS_FORK", "").lower() == "true":
+              print("EXEMPT: PR comes from a fork -- the author has no access to this Linear workspace.")
+              out("cards", "")
+              sys.exit(0)
+
+          exempt_labels = csv("EXEMPT_LABELS") & labels
+          if exempt_labels:
+              print(f"EXEMPT: PR carries the label {sorted(exempt_labels)[0]!r}.")
+              print("The card requirement is waived for this PR.")
+              out("cards", "")
+              sys.exit(0)
+
+          if author in csv("EXEMPT_ACTORS"):
+              print(f"EXEMPT: {author} is an exempt author (bot).")
+              out("cards", "")
+              sys.exit(0)
+
+          # GitHub's closing keywords and Linear's, unioned. Linear accepts more
+          # verbs than GitHub does, and the repos rely on GitHub's set for the
+          # merge-time transition, so requiring the intersection would reject
+          # bodies that genuinely work.
+          VERBS = (
+              r"clos(?:e|es|ed|ing)|fix(?:|es|ed|ing)|resolv(?:e|es|ed|ing)"
+              r"|complet(?:e|es|ed|ing)"
+          )
+          pattern = re.compile(
+              rf"\b(?:{VERBS})\b[\s:]+#?({team}-\d+)\b", re.IGNORECASE
+          )
+          cards = sorted({m.group(1).upper() for m in pattern.finditer(body)})
+
+          if cards:
+              print(f"PASS: PR body closes {', '.join(cards)}.")
+              out("cards", ",".join(cards))
+              sys.exit(0)
+
+          # Distinguish "mentions a card but will not transition it" from "no
+          # card at all". The first is a near miss and by far the more common
+          # mistake -- saying so beats a generic failure message.
+          bare = sorted({m.upper() for m in re.findall(rf"\b({team}-\d+)\b", body, re.IGNORECASE)})
+
+          print("FAIL: this PR does not close a Linear card.", file=sys.stderr)
+          print("", file=sys.stderr)
+          if bare:
+              print(
+                  f"  The body mentions {', '.join(bare)}, but with no closing keyword,",
+                  file=sys.stderr,
+              )
+              print(
+                  "  so Linear will link the PR and then never transition the card.",
+                  file=sys.stderr,
+              )
+              print(f"  Write it as:  Fixes {bare[0]}", file=sys.stderr)
+          else:
+              print(f"  Add a line to the PR body:  Fixes {team}-123", file=sys.stderr)
+          print("", file=sys.stderr)
+          print("  Why: merging is what moves the card to Done, and only a closing", file=sys.stderr)
+          print("  keyword in the body does that. Without it the work lands with no", file=sys.stderr)
+          print("  trace on the board -- and MISSION.md forbids moving status by hand,", file=sys.stderr)
+          print("  so the card would sit in Todo forever.", file=sys.stderr)
+          print("", file=sys.stderr)
+          print("  No card yet? Create it first -- filing is not optional and not a", file=sys.stderr)
+          print("  design decision. Genuinely exempt? Apply the 'no-card' label.", file=sys.stderr)
+          sys.exit(1)
+          PY
+
+      # Regex alone cannot tell MIK-123 from MIK-1234. A typo'd number passes
+      # this check, merges, and transitions nothing -- the identical silent
+      # failure the workflow exists to prevent, just one layer further in.
+      # Enabling this closes that gap; leaving it off is a deliberate choice to
+      # accept it rather than manage a secret in five repos.
+      - name: Verify the card exists in Linear
+        if: inputs.verify-card-exists && steps.parse.outputs.cards != ''
+        env:
+          CARDS: ${{ steps.parse.outputs.cards }}
+          LINEAR_API_KEY: ${{ secrets.linear-api-key }}
+        run: |
+          if [ -z "${LINEAR_API_KEY}" ]; then
+            echo "FAIL: verify-card-exists is on but no linear-api-key secret reached this job." >&2
+            echo "  In this org that usually means the secret was set at ORG scope. On the" >&2
+            echo "  Free plan with private repos, org secrets resolve to an empty string" >&2
+            echo "  with no error -- set it at repo scope instead:" >&2
+            echo "    gh secret set LINEAR_API_KEY --repo mikrosag/<repo>" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json, os, sys, urllib.error, urllib.request
+
+          cards = [c for c in os.environ["CARDS"].split(",") if c]
+          query = "query($id: String!) { issue(id: $id) { identifier title state { name } } }"
+          missing, found = [], []
+
+          for card in cards:
+              req = urllib.request.Request(
+                  "https://api.linear.app/graphql",
+                  data=json.dumps({"query": query, "variables": {"id": card}}).encode(),
+                  headers={
+                      "Content-Type": "application/json",
+                      "Authorization": os.environ["LINEAR_API_KEY"],
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as resp:
+                      payload = json.load(resp)
+              except urllib.error.URLError as exc:
+                  # Linear being unreachable is not the PR's fault. Failing here
+                  # would block every merge on a third party's uptime, so this
+                  # degrades to the regex verdict already reached above.
+                  print(f"WARN: could not reach Linear ({exc}) -- skipping existence check.")
+                  sys.exit(0)
+
+              issue = (payload.get("data") or {}).get("issue")
+              if issue:
+                  found.append(f"{issue['identifier']} [{issue['state']['name']}] {issue['title']}")
+              else:
+                  missing.append(card)
+
+          for line in found:
+              print(f"  OK    {line}")
+          if missing:
+              print("", file=sys.stderr)
+              print(f"FAIL: no such Linear issue: {', '.join(missing)}", file=sys.stderr)
+              print("  The PR would merge and transition nothing. Check the number.", file=sys.stderr)
+              sys.exit(1)
+          PY

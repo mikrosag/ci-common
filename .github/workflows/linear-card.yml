@@ -1,0 +1,56 @@
+name: linear-card
+
+# Enforces "every PR closes a Linear card" (MISSION.md §9).
+#
+# WHY THIS IS ITS OWN FILE AND NOT A JOB IN ci.yml
+# ------------------------------------------------
+# It needs the `edited` trigger. ci.yml runs on the default pull_request types
+# (opened, synchronize, reopened), none of which fire when someone edits the PR
+# body -- so a PR that failed this check and then had "Fixes MIK-123" added
+# would stay red until an unrelated push happened to re-run it. That is a
+# miserable loop to be stuck in and it teaches people to ignore the check.
+#
+# Adding `edited` to ci.yml instead would re-run gitleaks, semgrep, osv-scanner
+# and the build on every typo fix in a description, on one shared self-hosted
+# runner. Splitting the trigger costs one small hosted job and keeps the
+# expensive suite on code changes, where it belongs.
+#
+# `labeled`/`unlabeled` are here so applying the `no-card` exemption label takes
+# effect immediately rather than needing another push.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linear-card:
+    # LOCAL PATH, NOT @v1 -- and this repo is the one place that is correct.
+    #
+    # Consumer repos pin `mikrosag/ci-common/....yml@v1`. This repo cannot: a PR
+    # that ADDS or CHANGES linear-card-check.yml would be gated by the @v1 tag it
+    # is trying to change, so the check would test the old copy and a broken new
+    # one would sail through. That is the same chicken-and-egg ci.yml's header
+    # describes, and it is why ci.yml inlines its checks against the branch under
+    # test rather than calling its own reusable workflows.
+    #
+    # `./` resolves against the PR head, so this repo self-checks with the copy
+    # the PR actually proposes. Verified the hard way on PR #33: pointing this at
+    # @v1 before the tag moved failed at dispatch with "workflow file issue" --
+    # not as a normal red check, so `gh pr checks` did not even list it.
+    uses: ./.github/workflows/linear-card-check.yml
+    # verify-card-exists is off until LINEAR_API_KEY is set at REPO scope in
+    # each repo (org scope silently resolves to an empty string here -- Free
+    # plan, private repos). Without it a typo'd card number passes the regex,
+    # merges, and transitions nothing.
+    # with:
+    #   verify-card-exists: true
+    # secrets:
+    #   linear-api-key: ${{ secrets.LINEAR_API_KEY }}
