@@ -301,6 +301,19 @@ jobs:
           # field -- this job produces them, it doesn't commit on the caller's
           # behalf, since which repo/path is caller-specific.
           path: sbom/
+      - name: Remove local SBOM build image
+        # This runs on the persistent self-hosted macOS runner, not an ephemeral
+        # GitHub-hosted one -- nothing ever reclaimed the image this job builds,
+        # so every run left a permanent local/mcp-sbom:<server>-<sha> image on
+        # the Mac Mini's disk. Confirmed 2026-09-12: mcp-hello alone had
+        # accumulated 50 (~8.5GB) and agentregistry 90 (~24GB), none referenced
+        # by any running container. if: always() so a failed SBOM/sign/verify
+        # step still cleans up the image that was built before it.
+        if: always()
+        env:
+          SERVER_NAME: ${{ inputs.server-name }}
+          TAG: ${{ github.sha }}
+        run: docker rmi -f "local/mcp-sbom:${SERVER_NAME}-${TAG}" 2>/dev/null || true
 
   gate-summary:
     # Pure aggregation of needs.*.result -- runs no tools, touches no files, so
