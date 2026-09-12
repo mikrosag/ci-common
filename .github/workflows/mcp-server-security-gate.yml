@@ -117,6 +117,17 @@ jobs:
   rules-and-policy:
     runs-on: [self-hosted, macOS]
     timeout-minutes: 20
+    # A Dependabot PR runs against Dependabot's separate secret store, which
+    # never has CI_COMMON_READ_APP_ID/PRIVATE_KEY (those are repo secrets) --
+    # create-github-app-token below resolves them empty and hard-errors,
+    # failing this job for every Dependabot PR regardless of what it changes
+    # (MIK-166). Skip visibly rather than fail for a reason unrelated to the
+    # dependency bump; gate-summary's `contains(needs.*.result, 'failure')`
+    # already treats 'skipped' as passing, so this alone clears the gate.
+    # The other four jobs (secret-scan, sca-scan, container-scan, sbom-sign)
+    # don't need this secret and still run normally on Dependabot PRs -- this
+    # is the one check that loses coverage, not the whole gate.
+    if: github.actor != 'dependabot[bot]'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
