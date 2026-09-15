@@ -76,6 +76,11 @@ on:
         type: boolean
         default: false
         required: false
+      repo-scans:
+        description: "Run the repo-wide secret-scan/SAST (security-checks.yml) and SCA (sca-scan.yml) stages. Neither takes a path, so both scan the whole calling repo whatever server-path says -- a repo with several gates scans the identical checkout once per gate. Set false only when the caller already runs both over the same checkout AND lists them in this job's `needs:`, so the gate still cannot pass without them (homelab's three gates, MIK-235)."
+        type: boolean
+        default: true
+        required: false
     secrets:
       CI_COMMON_READ_APP_ID:
         description: "App ID of the mcp-gateway-ci-common-reader GitHub App (Contents: Read-only, installed only on ci-common). The default GITHUB_TOKEN in a caller's workflow run can't check out a different private repo's contents, which the rules-and-policy job needs (it reads ci-common's own policy/ and semgrep-rules/ files) -- a short-lived App installation token stands in for that. Declared in an explicit secrets block rather than relying on `secrets: inherit`. Note these must be set as REPO-level secrets on each calling repo -- org-level secrets resolve empty on this org's Free plan (see README)."
@@ -90,9 +95,11 @@ permissions:
 
 jobs:
   secret-scan-and-sast:
+    if: inputs.repo-scans
     uses: mikrosag/ci-common/.github/workflows/security-checks.yml@v1
 
   sca-scan:
+    if: inputs.repo-scans
     uses: mikrosag/ci-common/.github/workflows/sca-scan.yml@v1
 
   container-scan:
@@ -240,7 +247,10 @@ jobs:
           echo "all rules and policy checks passed"
 
   sbom-sign:
-    runs-on: [self-hosted, macOS]
+    # `docker` label (MIK-235): only frans-mac-runner carries it. The second
+    # runner shares this Mac's OrbStack VM, image store and trivy DB, so Docker
+    # work stays serialised on one runner while everything else runs on both.
+    runs-on: [self-hosted, macOS, docker]
     timeout-minutes: 20
     needs: [container-scan]
     steps:
