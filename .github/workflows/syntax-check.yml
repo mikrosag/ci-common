@@ -44,7 +44,10 @@ on:
 
 jobs:
   syntax-check:
-    runs-on: ubuntu-latest
+    # Budget fallback (MIK-231): runs on the Mac when the caller repo sets
+    # CI_RUNNER_FALLBACK=self-hosted. Private repos only -- see security-checks.yml.
+    # Portable as-is: the runner's bash is Homebrew 5.x, so mapfile works.
+    runs-on: ${{ (vars.CI_RUNNER_FALLBACK == 'self-hosted' && github.event.repository.private) && fromJSON('["self-hosted","macOS"]') || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -50,7 +50,13 @@ jobs:
     # Pinning semgrep via pip additionally makes the engine check below true by
     # construction rather than dependent on whatever brew last installed --
     # which was the drift this check existed to catch.
-    runs-on: ubuntu-latest
+    #
+    # Budget fallback (MIK-231): when the caller repo sets
+    # CI_RUNNER_FALLBACK=self-hosted, this job runs on the Mac instead. Set and
+    # cleared automatically by automation's ci_budget_fallback.py when GitHub
+    # refuses hosted jobs over the spending limit. Never applies to a public
+    # repo: a fork PR must not be able to reach the Mac.
+    runs-on: ${{ (vars.CI_RUNNER_FALLBACK == 'self-hosted' && github.event.repository.private) && fromJSON('["self-hosted","macOS"]') || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
       GITLEAKS_VERSION: "8.30.1"
@@ -63,7 +69,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      # On the Mac the same versions are Homebrew installs. Verified rather than
+      # installed: pip into Homebrew's python is refused (PEP 668), and a
+      # linux_x64 tarball does not run there. Drift fails the job loudly.
+      - name: Verify pinned tools (self-hosted fallback)
+        if: runner.os == 'macOS'
+        run: |
+          actual="$(gitleaks version 2>/dev/null)"
+          if [ "$actual" != "$GITLEAKS_VERSION" ]; then
+            echo "FAIL: runner has gitleaks '${actual}', pin is ${GITLEAKS_VERSION}." >&2
+            exit 1
+          fi
+          python3 -c 'import yaml'
+          echo "GITLEAKS_BIN=$(command -v gitleaks)" >> "$GITHUB_ENV"
+
       - name: Install pinned tools
+        if: runner.os == 'Linux'
         env:
           SEMGREP_VERSION: ${{ inputs.semgrep-version }}
         run: |
@@ -80,11 +101,12 @@ jobs:
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
           chmod +x /tmp/gitleaks
           python3 -m pip install --quiet "semgrep==${SEMGREP_VERSION}" pyyaml
+          echo "GITLEAKS_BIN=/tmp/gitleaks" >> "$GITHUB_ENV"
 
       - name: gitleaks
         id: gitleaks
         continue-on-error: true
-        run: /tmp/gitleaks detect --source . --no-banner --redact
+        run: '"$GITLEAKS_BIN" detect --source . --no-banner --redact'
 
       # This step used to run `semgrep scan --config auto`. `auto` resolves the
       # ruleset from the registry at scan time, so the set of rules could change

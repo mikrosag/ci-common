@@ -29,16 +29,22 @@ on:
 
 jobs:
   ruff:
-    runs-on: ubuntu-latest
+    # Budget fallback (MIK-231): runs on the Mac when the caller repo sets
+    # CI_RUNNER_FALLBACK=self-hosted. Private repos only -- see security-checks.yml.
+    runs-on: ${{ (vars.CI_RUNNER_FALLBACK == 'self-hosted' && github.event.repository.private) && fromJSON('["self-hosted","macOS"]') || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # pip only on Linux: Homebrew's python refuses it (PEP 668). On the Mac
+      # ruff is a Homebrew install, so the same pin is verified, not installed.
       - name: Install pinned ruff
         env:
           RUFF_VERSION: ${{ inputs.ruff-version }}
         run: |
-          python3 -m pip install --quiet "ruff==${RUFF_VERSION}"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            python3 -m pip install --quiet "ruff==${RUFF_VERSION}"
+          fi
           installed="$(ruff --version | awk '{print $2}')"
           if [ "$installed" != "$RUFF_VERSION" ]; then
             echo "FAIL: asked for ruff ${RUFF_VERSION}, got ${installed}." >&2

@@ -70,7 +70,11 @@ permissions:
 
 jobs:
   linear-card-check:
-    runs-on: ubuntu-latest
+    # Budget fallback (MIK-231): runs on the Mac when the caller repo sets
+    # CI_RUNNER_FALLBACK=self-hosted. The private-repo guard matters most here:
+    # this check exists for fork PRs to public repos, which must never reach
+    # the Mac -- see security-checks.yml.
+    runs-on: ${{ (vars.CI_RUNNER_FALLBACK == 'self-hosted' && github.event.repository.private) && fromJSON('["self-hosted","macOS"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       # No checkout. This job reads the event payload and nothing from the
