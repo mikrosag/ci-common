@@ -41,7 +41,9 @@ on:
 
 jobs:
   waiver-check:
-    runs-on: ubuntu-latest
+    # Budget fallback (MIK-231): runs on the Mac when the caller repo sets
+    # CI_RUNNER_FALLBACK=self-hosted. Private repos only -- see security-checks.yml.
+    runs-on: ${{ (vars.CI_RUNNER_FALLBACK == 'self-hosted' && github.event.repository.private) && fromJSON('["self-hosted","macOS"]') || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,7 +55,9 @@ jobs:
           REQUIRED: ${{ inputs.required }}
           TRIVYIGNORE: ${{ inputs.trivyignore }}
         run: |
-          python3 -m pip install --quiet pyyaml
+          # Install only if missing: the Mac fallback runner already has pyyaml,
+          # and Homebrew's python refuses pip installs (PEP 668).
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml
           python3 - <<'PY'
           import os, sys, datetime, yaml
 

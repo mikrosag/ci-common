@@ -328,8 +328,10 @@ jobs:
 
   gate-summary:
     # Pure aggregation of needs.*.result -- runs no tools, touches no files, so
-    # there was never a reason for it to occupy the Mac.
-    runs-on: ubuntu-latest
+    # there was never a reason for it to occupy the Mac -- except when hosted
+    # runners are refused over the spending limit (MIK-231), when the caller's
+    # CI_RUNNER_FALLBACK=self-hosted moves it there. Private repos only.
+    runs-on: ${{ (vars.CI_RUNNER_FALLBACK == 'self-hosted' && github.event.repository.private) && fromJSON('["self-hosted","macOS"]') || 'ubuntu-latest' }}
     timeout-minutes: 20
     needs:
       [

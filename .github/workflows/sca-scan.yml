@@ -35,7 +35,10 @@ jobs:
     # sca-scan was chosen as the pilot precisely because it is the safest thing
     # to get wrong: it is observability-only (see below), so if this misbehaves
     # nothing is gated and no merge is blocked.
-    runs-on: ubuntu-latest
+    #
+    # Budget fallback (MIK-231): runs on the Mac when the caller repo sets
+    # CI_RUNNER_FALLBACK=self-hosted. Private repos only -- see security-checks.yml.
+    runs-on: ${{ (vars.CI_RUNNER_FALLBACK == 'self-hosted' && github.event.repository.private) && fromJSON('["self-hosted","macOS"]') || 'ubuntu-latest' }}
     timeout-minutes: 20
     # Observability-only for now: osv-scanner's severity data is inconsistent across
     # ecosystems (mixed CVSS string formats, not always a clean numeric score), so
@@ -57,7 +60,26 @@ jobs:
       # value becomes script syntax -- here that would mean arbitrary commands
       # running immediately before a security scanner is verified and executed.
       # (semgrep: run-shell-injection.)
+      # Self-hosted fallback: osv-scanner is a Homebrew install on the Mac, so
+      # its version is checked against the same pin instead of downloading a
+      # linux_amd64 binary that cannot run there.
+      - name: Verify osv-scanner (self-hosted fallback)
+        if: runner.os == 'macOS'
+        env:
+          OSV_VERSION: ${{ inputs.osv-scanner-version }}
+        run: |
+          actual="$(osv-scanner --version 2>/dev/null | head -1)"
+          case "$actual" in
+            *" ${OSV_VERSION#v}") ;;
+            *)
+              echo "FAIL: runner has '${actual}', pin is ${OSV_VERSION}." >&2
+              exit 1
+              ;;
+          esac
+          echo "OSV_BIN=$(command -v osv-scanner)" >> "$GITHUB_ENV"
+
       - name: Install osv-scanner (pinned, checksum-verified)
+        if: runner.os == 'Linux'
         env:
           OSV_VERSION: ${{ inputs.osv-scanner-version }}
           OSV_SHA256: ${{ inputs.osv-scanner-sha256 }}
@@ -77,7 +99,8 @@ jobs:
           fi
           chmod +x /tmp/osv-scanner
           /tmp/osv-scanner --version
+          echo "OSV_BIN=/tmp/osv-scanner" >> "$GITHUB_ENV"
 
       - name: OSV-Scanner (report only, does not fail the build)
         run: |
-          /tmp/osv-scanner scan source --recursive . || true
+          "$OSV_BIN" scan source --recursive . || true
