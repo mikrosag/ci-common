@@ -106,7 +106,7 @@ jobs:
       - name: gitleaks
         id: gitleaks
         continue-on-error: true
-        run: '"$GITLEAKS_BIN" detect --source . --no-banner --redact'
+        run: '"$GITLEAKS_BIN" detect --source . --no-banner --redact --verbose'
 
       # This step used to run `semgrep scan --config auto`. `auto` resolves the
       # ruleset from the registry at scan time, so the set of rules could change
