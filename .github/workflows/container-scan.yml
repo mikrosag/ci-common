@@ -115,3 +115,17 @@ jobs:
           SEVERITY: ${{ inputs.severity }}
           TAG: ${{ github.sha }}
         run: trivy image --skip-db-update --exit-code 1 --severity "$SEVERITY" "local/trivy-scan:$TAG"
+
+      # This job runs on the persistent self-hosted macOS runner, so nothing
+      # reclaims the image it builds: every run left a permanent
+      # local/trivy-scan:<sha> tag in the Mac Mini's Docker store (~150 over five
+      # weeks, cleared by hand 2026-09-28). Tagged images are not dangling, so
+      # `docker image prune` never touches them. The tag carries this run's
+      # unique sha, so nothing else can reference it once the job ends.
+      # if: always() so a failing scan, a stale-DB refusal or a failed build
+      # still cleans up (rmi of a tag that was never created is a no-op).
+      - name: Remove the scan image
+        if: always()
+        env:
+          TAG: ${{ github.sha }}
+        run: docker rmi -f "local/trivy-scan:$TAG" 2>/dev/null || true
