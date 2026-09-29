@@ -1,0 +1,142 @@
+name: soundcheck
+
+# LLM security review of a PR's diff against OWASP Web Top 10:2025, OWASP LLM
+# Top 10:2025 and API Security (thejefflarson/soundcheck, 52 checks). Added
+# 2026-09-30 for MIK-472. The pattern scanners (gitleaks, semgrep, osv-scanner,
+# trivy) do not read code for intent; this does, which is where prompt-injection
+# and agent-authz issues in mcp-gateway / model-router / automation show up.
+#
+# ADVISORY BY DEFAULT. Critical/High findings are reported in the PR comment and
+# the job summary but do not fail the check, until a baseline is triaged. Set
+# `enforce: true` from the caller to make exit-code 1 fail the job -- the same
+# warn-first-then-enforce pattern as ROOT_CHECK_ENFORCE (MIK-179).
+#
+# COSTS MONEY, SO IT IS OPT-IN PER REPO. With no `anthropic-api-key` secret
+# passed, the job skips with a notice and spends nothing. Pass a repo-scoped
+# secret (org-scoped secrets resolve to "" on this plan -- see PIPELINE.md):
+#
+#   soundcheck:
+#     uses: mikrosag/ci-common/.github/workflows/soundcheck.yml@v1
+#     permissions: { contents: read, pull-requests: write }
+#     secrets:
+#       anthropic-api-key: ${{ secrets.SOUNDCHECK_ANTHROPIC_API_KEY }}
+#
+# Diffs that touch only docs (*.md, *.txt, docs/**, LICENSE) are skipped too.
+#
+# The reviewer is itself an LLM and can be prompt-injected by content in the
+# diff it reads. Treat a clean result as "nothing found", never as a pass that
+# overrides the other scanners. That is also why it never gets write access:
+# autofix is off and the token is contents:read, so even a subverted review
+# cannot push to the PR branch.
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: "Claude model id, pinned so a silent alias change can't alter review behaviour or cost."
+        type: string
+        default: "claude-sonnet-5-5"
+        required: false
+      max-budget-usd:
+        description: "Spend cap per run (USD), enforced by the reviewer CLI."
+        type: string
+        default: "2"
+        required: false
+      enforce:
+        description: "Fail the job on Critical/High findings (reviewer exit code 1). Off until a baseline is triaged."
+        type: boolean
+        default: false
+        required: false
+    secrets:
+      anthropic-api-key:
+        description: "Anthropic API key for the review. Absent => the job skips."
+        required: false
+
+jobs:
+  review:
+    # Hosted by default, like the other scan jobs; MIK-231 budget fallback to
+    # the Mac only for private repos.
+    runs-on: ${{ (vars.CI_RUNNER_FALLBACK == 'self-hosted' && github.event.repository.private) && fromJSON('["self-hosted","macOS"]') || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Decide whether to run
+        id: gate
+        env:
+          HAS_KEY: ${{ secrets.anthropic-api-key != '' }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::notice title=soundcheck skipped::No anthropic-api-key secret passed; nothing reviewed, nothing spent."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT" != "pull_request" ]; then
+            # Scheduled/dispatch runs make the action open a PR on a branch it
+            # pushes, which needs contents:write. Not granted; PRs only for now.
+            echo "::notice title=soundcheck skipped::Runs on pull_request only (event: $EVENT)."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.gate.outputs.run == 'true'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Skip docs-only diffs
+        id: diff
+        if: steps.gate.outputs.run == 'true'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          code_files="$(git diff --name-only "origin/${BASE_REF}...HEAD" \
+            | grep -vE '(\.md|\.txt)$|^docs/|(^|/)LICENSE$' || true)"
+          if [ -z "$code_files" ]; then
+            echo "::notice title=soundcheck skipped::Diff touches only docs."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Files in scope:"; echo "$code_files"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Soundcheck review
+        id: sc
+        if: steps.diff.outputs.run == 'true'
+        uses: thejefflarson/soundcheck-action@ba406c301382211d66118ebcc699267745f7f849 # v2.1.2
+        with:
+          anthropic-api-key: ${{ secrets.anthropic-api-key }}
+          github-token: ${{ github.token }}
+          model: ${{ inputs.model }}
+          autofix: "false"
+          max-budget-usd: ${{ inputs.max-budget-usd }}
+          timeout-seconds: "900"
+
+      - name: Verdict
+        if: steps.diff.outputs.run == 'true'
+        env:
+          EXIT_CODE: ${{ steps.sc.outputs.exit-code }}
+          FINDINGS: ${{ steps.sc.outputs.findings-count }}
+          ENFORCE: ${{ inputs.enforce }}
+        run: |
+          {
+            echo "### soundcheck"
+            echo "- findings: ${FINDINGS:-0}"
+            echo "- reviewer exit code: ${EXIT_CODE:-unknown} (0 clean, 1 Critical/High, 2 infra error)"
+            echo "- mode: $([ "$ENFORCE" = "true" ] && echo enforced || echo advisory)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$EXIT_CODE" in
+            0) ;;
+            1)
+              if [ "$ENFORCE" = "true" ]; then
+                echo "::error title=soundcheck::Critical/High findings (see PR comment)."
+                exit 1
+              fi
+              echo "::warning title=soundcheck::Critical/High findings (advisory; see PR comment)." ;;
+            *)
+              # An infra error (quota, API outage, timeout) never blocks a PR,
+              # even when enforced: it says nothing about the code.
+              echo "::warning title=soundcheck::Reviewer did not complete (exit ${EXIT_CODE:-unknown})." ;;
+          esac
