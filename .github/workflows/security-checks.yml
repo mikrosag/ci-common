@@ -21,7 +21,7 @@ on:
       semgrep-version:
         description: "Expected semgrep engine version. Verified, not installed -- the binary comes from Homebrew on the runner."
         type: string
-        default: "1.168.0"
+        default: "1.176.0"
         required: false
 
 jobs:
