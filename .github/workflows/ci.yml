@@ -50,7 +50,7 @@ jobs:
       GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
       SEMGREP_VERSION: "1.168.0"
       RULESET: "p/default"
-      EXPECTED_HASH: "b60be047ae607844e9a68d5d7d43355d060f177520323e4f1db626c5a0a20317"
+      EXPECTED_HASH: "18b51c6803cb17239d2768fa9ca063859df89bd9b3bf2dd7e6647ceb8f4bd37b"
       EXPECTED_COUNT: "1074"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
