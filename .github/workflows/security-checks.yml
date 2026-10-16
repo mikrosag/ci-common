@@ -11,7 +11,7 @@ on:
       semgrep-ruleset-hash:
         description: "Expected canonical hash of the fetched ruleset (rules sorted by id, then hashed -- NOT a hash of the raw bytes, see the sast job). The scan fails if the registry serves different rules."
         type: string
-        default: "b60be047ae607844e9a68d5d7d43355d060f177520323e4f1db626c5a0a20317"
+        default: "18b51c6803cb17239d2768fa9ca063859df89bd9b3bf2dd7e6647ceb8f4bd37b"
         required: false
       semgrep-rule-count:
         description: "Expected number of rules in the ruleset. A cheap second signal that reads more usefully than a hash when it changes."
