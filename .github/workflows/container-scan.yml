@@ -64,7 +64,7 @@ jobs:
       # reads exactly like a real CRITICAL/HIGH finding unless you open the log.
       #
       # The scan step below therefore uses --skip-db-update and never touches the
-      # mirror. automation's com.openclaw.trivy-db-refresh job keeps the cache
+      # mirror. automation's com.mikrosag.trivy-db-refresh job keeps the cache
       # warm daily, out-of-band, where a mirror outage costs nothing and retries
       # tomorrow.
       #
@@ -89,7 +89,7 @@ jobs:
           if [ ! -f "$meta" ]; then
             echo "FAIL: no Trivy DB cache at $meta." >&2
             echo "Run automation/scripts/trivy_db_refresh.py on the runner, or" >&2
-            echo "check that com.openclaw.trivy-db-refresh is loaded." >&2
+            echo "check that com.mikrosag.trivy-db-refresh is loaded." >&2
             exit 1
           fi
           # One line on purpose: a multi-line python -c inside a YAML block
@@ -104,8 +104,8 @@ jobs:
             echo "FAIL: Trivy vulnerability DB is ${age}h old, over the ${limit}h limit." >&2
             echo "Scanning against data this stale would report clean for anything" >&2
             echo "disclosed since, so this refuses rather than passing quietly." >&2
-            echo "The daily com.openclaw.trivy-db-refresh job has not succeeded --" >&2
-            echo "check /Users/frans/.openclaw/logs/trivy_db_refresh.err.log." >&2
+            echo "The daily com.mikrosag.trivy-db-refresh job has not succeeded --" >&2
+            echo "check /Users/frans/.mikrosag/logs/trivy_db_refresh.err.log." >&2
             exit 1
           fi
 
