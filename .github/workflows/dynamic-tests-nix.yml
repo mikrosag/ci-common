@@ -8,6 +8,20 @@ on:
         type: string
         default: "python3 -m pytest tests/ -v"
         required: false
+      max-test-seconds:
+        description: >-
+          Fail the job if any single pytest setup/call/teardown takes longer than this many
+          seconds (MIK-781). "0" disables the check; the slowest tests are still reported.
+        type: string
+        default: "10"
+        required: false
+      slow-tests:
+        description: >-
+          Newline-separated pytest node-id substrings that are allowed to exceed
+          max-test-seconds. Keep it short and put a comment in the caller saying why.
+        type: string
+        default: ""
+        required: false
 
 jobs:
   test:
@@ -41,7 +55,42 @@ jobs:
       # input. What the injection fix prevents is a value escaping into the
       # surrounding script; it was never meant to stop a command input being a
       # command.
+      # Duration budget (MIK-781). Two bugs (MIK-779, MIK-780) were a single test
+      # silently taking 100+ s while holding the only runner. pytest's own
+      # --durations output is parsed rather than a plugin injected: a plugin has to
+      # be importable, and callers that set their own PYTHONPATH (agent-bridge) would
+      # break. PYTEST_ADDOPTS reaches any pytest invocation, whatever test-command is.
       - name: Run tests in Nix devShell
         env:
           TEST_COMMAND: ${{ inputs.test-command }}
-        run: nix develop -c bash -c "$TEST_COMMAND"
+          MAX_TEST_SECONDS: ${{ inputs.max-test-seconds }}
+          SLOW_TESTS: ${{ inputs.slow-tests }}
+        run: |
+          set -o pipefail
+          export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --durations=10"
+          out="$RUNNER_TEMP/test-output.txt"; dur="$RUNNER_TEMP/durations.txt"
+          rc=0
+          nix develop -c bash -c "$TEST_COMMAND" 2>&1 | tee "$out" || rc=$?
+
+          # "12.34s call  tests/x.py::t" lines inside pytest's "slowest N durations" section
+          awk '/slowest [0-9]* ?durations/ {on=1; next} on && /^=/ {on=0} on && $1 ~ /^[0-9.]+s$/ && ($2=="call"||$2=="setup"||$2=="teardown") {print}' "$out" > "$dur"
+          if [ -s "$dur" ]; then
+            { echo "### Slowest tests"; echo '```'; head -5 "$dur"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "${MAX_TEST_SECONDS:-0}" != "0" ] && [ -s "$dur" ]; then
+            over="$RUNNER_TEMP/over.txt"
+            awk -v max="$MAX_TEST_SECONDS" '{d=$1; sub(/s$/,"",d); if (d+0 > max+0) print}' "$dur" > "$over"
+            if [ -n "$SLOW_TESTS" ]; then
+              allow="$RUNNER_TEMP/allow.txt"
+              printf '%s\n' "$SLOW_TESTS" | sed '/^[[:space:]]*$/d' > "$allow"
+              if [ -s "$allow" ]; then grep -vF -f "$allow" "$over" > "$over.f" || true; mv "$over.f" "$over"; fi
+            fi
+            if [ -s "$over" ]; then
+              echo "::error title=Test over ${MAX_TEST_SECONDS}s budget::$(head -3 "$over" | tr '\n' ';')"
+              echo "Tests over the ${MAX_TEST_SECONDS}s budget (max-test-seconds; allowlist via slow-tests):"
+              cat "$over"
+              [ "$rc" = 0 ] && rc=1
+            fi
+          fi
+          exit "$rc"
