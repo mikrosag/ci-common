@@ -55,6 +55,11 @@ on:
         type: boolean
         default: true
         required: false
+      allow-refs:
+        description: "Also accept a non-closing reference (Refs MIK-123, Ref, References) as satisfying the check. For repos with no auto-deploy (mac-config: a merge is not an apply, MIK-605), where a closing keyword would mark the card Done before the change is live. The card is linked but never transitioned on merge; closing it by hand once the change is applied is then the author's job. Off by default."
+        type: boolean
+        default: false
+        required: false
       verify-card-exists:
         description: "Also ask Linear whether the referenced issue is real. Requires the linear-api-key secret. Off by default so the check works with no secret at all -- but see the note in the verify step: regex-only accepts a typo'd card number, which fails exactly as silently as the problem this workflow exists to catch."
         type: boolean
@@ -91,6 +96,7 @@ jobs:
           TEAM_KEY: ${{ inputs.team-key }}
           EXEMPT_LABELS: ${{ inputs.exempt-labels }}
           EXEMPT_ACTORS: ${{ inputs.exempt-actors }}
+          ALLOW_REFS: ${{ inputs.allow-refs }}
         run: |
           python3 - <<'PY'
           import json, os, re, sys
@@ -143,6 +149,20 @@ jobs:
               print(f"PASS: PR body closes {', '.join(cards)}.")
               out("cards", ",".join(cards))
               sys.exit(0)
+
+          # allow-refs: a non-closing reference satisfies the check for repos where a
+          # merge must not close the card (MIK-605). The card is only linked.
+          if os.environ.get("ALLOW_REFS", "").lower() == "true":
+              ref_pattern = re.compile(
+                  rf"\b(?:refs?|references?)\b[\s:]+#?({team}-\d+)\b", re.IGNORECASE
+              )
+              refs = sorted({m.group(1).upper() for m in ref_pattern.finditer(body)})
+              if refs:
+                  print(f"PASS: PR body references {', '.join(refs)} without closing it (allow-refs).")
+                  print("Linear links the PR but will not move the card on merge: close it by hand")
+                  print("once the change is actually applied.")
+                  out("cards", ",".join(refs))
+                  sys.exit(0)
 
           # Distinguish "mentions a card but will not transition it" from "no
           # card at all". The first is a near miss and by far the more common
