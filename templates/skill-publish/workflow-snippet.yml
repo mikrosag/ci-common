@@ -1,0 +1,54 @@
+# Drop into a new repo's .github/workflows/ci.yml and deploy.yml, adjusted
+# to that repo's actual skill layout (plugins/<plugin>/skills/<skill>/, see
+# README.md). See README.md in this folder for which mikrosag/skills scripts
+# to copy alongside this.
+
+# --- ci.yml jobs ---
+# security:
+#   uses: mikrosag/ci-common/.github/workflows/security-checks.yml@main
+# sca-scan:
+#   uses: mikrosag/ci-common/.github/workflows/sca-scan.yml@main
+# skill-lint:
+#   runs-on: [self-hosted, macOS]
+#   steps:
+#     - uses: actions/checkout@v4
+#     - run: pip3 install --quiet --break-system-packages pyyaml
+#     - run: python3 scripts/lint_skill.py --all   # finds skills via scripts/skillpaths.py
+# marketplace-lint:
+#   runs-on: [self-hosted, macOS]
+#   steps:
+#     - uses: actions/checkout@v4
+#     - run: python3 scripts/lint_marketplace.py
+# size-check:
+#   runs-on: [self-hosted, macOS]
+#   steps:
+#     - uses: actions/checkout@v4
+#     - run: python3 scripts/check_skill_size.py --all
+# build:
+#   runs-on: [self-hosted, macOS]
+#   steps:
+#     - uses: actions/checkout@v4
+#     - run: scripts/build_all.sh
+#     - uses: actions/upload-artifact@v4
+#       with: { name: skill-packages-${{ github.event.pull_request.number }}, path: "*.skill" }
+
+# --- deploy.yml (push to main) ---
+# publish:
+#   runs-on: [self-hosted, macOS]
+#   permissions: { contents: write }
+#   steps:
+#     - uses: actions/checkout@v4
+#     - run: scripts/build_all.sh
+#     - uses: actions/upload-artifact@v4
+#       with: { name: skill-packages-main-${{ github.sha }}, path: "*.skill" }
+#     - env: { ANTHROPIC_API_KEY: "${{ secrets.ANTHROPIC_API_KEY }}" }
+#       run: |
+#         pip3 install --quiet --break-system-packages anthropic
+#         python3 scripts/publish_skill_api.py --all
+#     - run: |
+#         if ! git diff --quiet -- scripts/.skill_ids.json; then
+#           git config user.name "mikrosag-ci"; git config user.email "ci@mikrosag.co.za"
+#           git add scripts/.skill_ids.json && git commit -m "ci: update scripts/.skill_ids.json [skip ci]" && git push
+#         fi
+#     # A brand-new skill gets a GitHub Release with its .skill attached (fetch-depth: 2
+#     # on checkout so HEAD^1 exists); see mikrosag/skills deploy.yml "release any brand-new skill".

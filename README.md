@@ -21,6 +21,7 @@ Shared CI/CD infrastructure for repos in the `mikrosag` org. There is one self-h
 - `templates/orbstack-deploy/` — for repos that ship as a container via OrbStack on the Mac.
 - `templates/nix-test/`, `templates/orbstack-test/` — scaffolding for the two dynamic-test reusable workflows above.
 - `templates/lint-js/` — scaffolding for `lint-js.yml`.
+- `templates/skill-publish/` — for a repo of Claude Skills / a plugin marketplace: validate, build and register pipeline, copied from `mikrosag/skills` (the reference implementation).
 
 ## Org-wide conventions (apply to every repo, not just this one)
 
