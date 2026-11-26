@@ -10,6 +10,17 @@ This repo holds shared CI/CD infrastructure for the `mikrosag` GitHub org: a reu
 - Templates under `templates/` are copied into other repos, not referenced live — editing a template here does not retroactively update repos that already copied it.
 - **Working a kanban card?** Pick it up from Linear (team `MIK`) — either assigned to you, or from `Backlog`/`Todo` tagged with the repo you're working in. The requirement lives in the issue description itself (no separate spec document to check) — read it fully before implementing, and check sub-issues if any exist. Move the issue to `In Progress` when you start (Linear MCP `update_issue`, or in-app). Open your PR referencing the issue with a GitHub magic word (`Fixes MIK-123`) so merging to `main` auto-transitions the issue to `Done` — no manual status flip needed. Notion is no longer part of per-card workflow — it's retained only as durable, cross-cutting reference material, not something to check per ticket. See `README.md`'s Kanban section for the full convention, including assignees, the start gate (a `Done when` command, no `Design` label) and the merge gate.
 
+## Security findings that cannot be fixed easily: threat-model triage (MIK-772)
+
+This rule records reasoning about a finding. It does not change any gate. The blocking gates stay as they are: `gitleaks`, `semgrep`, `trivy` (CRITICAL/HIGH) and the MCP admission gate (`mcp-server-security-gate.yml`, `semgrep-rules/`, `policy/`). A threat-model verdict never overrides a failing gate. A waiver on a blocking gate is Frans's decision.
+
+Use the `threat-modelling` skill: `mikrosag/skills` `plugins/security-architecture/skills/threat-modelling/` (plugin `security-architecture@mikrosag`).
+
+1. **Trigger.** Run the triage when a finding is advisory (`osv-scanner`, which is `continue-on-error`), or when a finding is blocking and no fix is available.
+2. **Short form (default, one finding).** Post a card comment that gives the attack path, who can reach it, the existing controls, the likelihood, the impact and a verdict. The verdict is one of `exploitable via a proven path`, `not exploitable` or `unproven`. Use the skill's methodology and risk scoring (`references/risk-scoring.md`).
+3. **Full form.** Produce the skill's complete threat register only for a design-level issue, for example a new service or a new trust boundary.
+4. **Effect of the verdict.** `exploitable via a proven path` files a fix card at the severity that the model gives. It does not by itself block a merge that the gates allow. `not exploitable` and `unproven` are recorded on the card. For a blocking gate, the waiver stays with Frans.
+
 ## Hosted runner budget (promoted from Claude Code memory, MIK-751)
 
 - A "recent account payments have failed or your spending limit" refusal on `ubuntu-latest` jobs means the Free plan's 2,000 hosted minutes are used up and the org's Actions budget is $0 with prevent_further_usage. Self-hosted `frans-mac-runner` jobs still run. Check `gh api organizations/mikrosag/settings/billing/usage/summary` (sku `actions_linux`); it resets on the 1st. The `CI_RUNNER_FALLBACK` switch moves hosted jobs to the self-hosted runner (MIK-231).
