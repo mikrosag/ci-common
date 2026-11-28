@@ -13,6 +13,28 @@ on:
         type: string
         default: "pytest tests/ -v"
         required: false
+      isolated:
+        description: >-
+          Run the test container with no network, no capabilities, no privilege
+          escalation and pid/memory limits (MIK-895). `docker build` keeps network
+          access, because it installs dependencies.
+        type: boolean
+        default: false
+        required: false
+      max-test-seconds:
+        description: >-
+          Fail the job if any single pytest setup/call/teardown takes longer than this many
+          seconds (MIK-781, MIK-895). "0" disables the check; the slowest tests are still reported.
+        type: string
+        default: "0"
+        required: false
+      slow-tests:
+        description: >-
+          Newline-separated pytest node-id substrings that are allowed to exceed
+          max-test-seconds. Keep it short and put a comment in the caller saying why.
+        type: string
+        default: ""
+        required: false
 
 jobs:
   test:
@@ -34,9 +56,58 @@ jobs:
         run: docker build -f "$DOCKERFILE" -t "local/dynamic-test:$TAG" .
       # $TEST_COMMAND is deliberately UNQUOTED: it is a command line and must
       # word-split into arguments for `docker run`. $TAG is quoted because it is
-      # a single value.
+      # a single value. $FLAGS is unquoted for the same reason as $TEST_COMMAND.
+      #
+      # Isolated mode (MIK-895): the expanded `isolation: ...` line is printed so a
+      # caller can prove from the job log which flags the run used.
+      #
+      # Duration budget: ported from dynamic-tests-nix.yml (MIK-781). pytest's own
+      # --durations output is parsed; PYTEST_ADDOPTS goes into the container with -e.
       - name: Run tests in container
         env:
           TAG: ${{ github.sha }}
           TEST_COMMAND: ${{ inputs.test-command }}
-        run: docker run --rm "local/dynamic-test:$TAG" $TEST_COMMAND
+          ISOLATED: ${{ inputs.isolated }}
+          MAX_TEST_SECONDS: ${{ inputs.max-test-seconds }}
+          SLOW_TESTS: ${{ inputs.slow-tests }}
+        run: |
+          set -o pipefail
+          FLAGS=""
+          if [ "$ISOLATED" = "true" ]; then
+            FLAGS="--network none --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 1g"
+            echo "isolation: $FLAGS"
+          fi
+          export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --durations=10"
+          out="$RUNNER_TEMP/test-output.txt"; dur="$RUNNER_TEMP/durations.txt"
+          rc=0
+          docker run --rm $FLAGS -e PYTEST_ADDOPTS "local/dynamic-test:$TAG" $TEST_COMMAND 2>&1 | tee "$out" || rc=$?
+
+          # "12.34s call  tests/x.py::t" lines inside pytest's "slowest N durations" section
+          awk '/slowest [0-9]* ?durations/ {on=1; next} on && /^=/ {on=0} on && $1 ~ /^[0-9.]+s$/ && ($2=="call"||$2=="setup"||$2=="teardown") {print}' "$out" > "$dur"
+          if [ -s "$dur" ]; then
+            { echo "### Slowest tests"; echo '```'; head -5 "$dur"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "${MAX_TEST_SECONDS:-0}" != "0" ] && [ -s "$dur" ]; then
+            over="$RUNNER_TEMP/over.txt"
+            awk -v max="$MAX_TEST_SECONDS" '{d=$1; sub(/s$/,"",d); if (d+0 > max+0) print}' "$dur" > "$over"
+            if [ -n "$SLOW_TESTS" ]; then
+              allow="$RUNNER_TEMP/allow.txt"
+              printf '%s\n' "$SLOW_TESTS" | sed '/^[[:space:]]*$/d' > "$allow"
+              if [ -s "$allow" ]; then grep -vF -f "$allow" "$over" > "$over.f" || true; mv "$over.f" "$over"; fi
+            fi
+            if [ -s "$over" ]; then
+              echo "::error title=Test over ${MAX_TEST_SECONDS}s budget::$(head -3 "$over" | tr '\n' ';')"
+              echo "Tests over the ${MAX_TEST_SECONDS}s budget (max-test-seconds; allowlist via slow-tests):"
+              cat "$over"
+              [ "$rc" = 0 ] && rc=1
+            fi
+          fi
+          exit "$rc"
+      # The image is per-commit and never reused; without this every PR run left
+      # one behind in the shared OrbStack image store.
+      - name: Remove test image
+        if: always()
+        env:
+          TAG: ${{ github.sha }}
+        run: docker image rm "local/dynamic-test:$TAG" || true
